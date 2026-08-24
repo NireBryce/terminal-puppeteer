@@ -24,6 +24,10 @@ command instead — no `.py`, a proper generated entry point rather than a
 copy of the script. Same tool either way; which name applies depends on
 whether it's installed.
 
+Nix: `nix run github:NireBryce/terminal-puppeteer`, or add it as a flake
+input for `packages.<system>.default`. `default.nix` works too, without
+flakes (`nix-build default.nix`).
+
 ## Provenance
 
 Written and maintained largely by Claude Code agents; the human behind

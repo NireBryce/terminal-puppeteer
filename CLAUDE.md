@@ -23,8 +23,13 @@ SSH, given tests and a real bug fix the same day by a second session
 working directly in this repo (`drain()` never actually stopped early on
 quiet output, despite the README already claiming it did — issue #1, fixed
 in #2), and split from one file into this package later the same day once
-it grew past ~300 lines, for readability. Read `DEVLOG.md` before assuming
-you know the current state; it's short and it's exactly for this.
+it grew past ~300 lines, for readability. Packaged three ways, all
+verified by actually building and running them, not just written:
+`pyproject.toml` (`pip install .`, `[project.scripts]`), `flake.nix`
+(`nix run`/`nix build`, plus `apps`/`devShells`), and `default.nix` (a
+`flake-compat` shim so `nix-build` works without flakes too). Read
+`DEVLOG.md` before assuming you know the current state; it's short and
+it's exactly for this.
 
 ## Conventions
 
@@ -79,7 +84,12 @@ at all, so the collision can't happen via the current config either way
 give the root wrapper the same name as the package it imports. Test any
 future packaging change the same way this one was: build the wheel,
 install it into a throwaway venv, run the installed command, don't just
-trust that running it in place still works.
+trust that running it in place still works. There are now three
+packaging surfaces (`pyproject.toml`, `flake.nix`, `default.nix`) --
+a change to one doesn't verify the others; `nix build`/`nix-build
+default.nix` are as cheap to actually run as the wheel round-trip and
+just as capable of silently breaking (`nix flake check` catches
+evaluation errors, not runtime ones like this).
 
 **"push" means the `ship` skill, not `git push origin main`.** Branch, PR,
 ask before merging, ask again before deleting the branch — two
