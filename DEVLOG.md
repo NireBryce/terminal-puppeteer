@@ -13,6 +13,36 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Modularized into terminal_puppeteer/ (#28)
+
+- Asked to modularize (the ~325-line single file, up against the "one
+  file" design goal stated in README/CLAUDE.md at the time). Flagged
+  that tension before doing it; asked again with "docs changes aren't
+  as bad this early" and proceeded. Pure move by concern: `keys.py`
+  (step vocabulary), `ansi.py`, `driver.py` (pty/subprocess), `cli.py`
+  (argparse + `main`, carries the `--help` docstring).
+  `terminal-puppeteer.py` at the root becomes a thin wrapper. README/
+  CLAUDE.md updated to describe the new layout rather than still
+  claiming "one file".
+- Tried renaming the wrapper to `terminal_puppeteer.py` to match the
+  package (asked for, to "fix/match import issue"), verified it against
+  a same-directory case first (safe), shipped it, then caught a real
+  bug building and installing the actual wheel into a scratch venv:
+  installed alone in `<venv>/bin/`, separate from the package in
+  `site-packages`, the identically-named wrapper shadows the real
+  package with itself -- `ModuleNotFoundError` on every installed
+  invocation. Reverted the rename, kept the rest. Lesson written up in
+  `pyproject.toml`'s own comment and a new `CLAUDE.md` convention so it
+  doesn't get "fixed" back into the same bug.
+- `tests/test_terminal_puppeteer.py`: real `from terminal_puppeteer
+  import ansi, cli, keys` now, replacing the `importlib.util`
+  load-by-path hack the old hyphenated single file needed. Same 56
+  tests, same assertions.
+- Verified at every stage (split, rename, revert, final state): full
+  suite green each time; man page re-rendered and `--warnings`-checked;
+  the wheel actually built and installed into a scratch venv three
+  times over the course of this, not just read and assumed correct.
+
 ## 2026-08-24 — CONTRIBUTORS.md + STYLEGUIDE.md: LLM agents explicitly invited (#26)
 
 - Asked to write `CONTRIBUTORS.md` inviting issues/PRs from LLM agents
