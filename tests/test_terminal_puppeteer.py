@@ -196,6 +196,24 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(b"--ssh-arg only applies to --ssh", result.stderr)
 
+    def test_malformed_cmd_is_a_clean_error_not_a_traceback(self):
+        # Issue #10: an unbalanced quote used to raise a raw
+        # ValueError/traceback out of shlex.split instead of the
+        # argparse-style error every other bad input gets.
+        result = run_cli(["--cmd", "echo 'unterminated", "x", "ENTER"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--cmd:", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_missing_steps_file_is_a_clean_error_not_a_traceback(self):
+        # Issue #10: same class of bug, via load_steps's open() call.
+        result = run_cli(
+            ["--cmd", "cat", "--steps-file", "/nonexistent/path.txt", "x"]
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--steps-file:", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
 
 class CliIntegrationTests(unittest.TestCase):
     """End-to-end runs against a local `cat` (or similar) under a real pty."""
