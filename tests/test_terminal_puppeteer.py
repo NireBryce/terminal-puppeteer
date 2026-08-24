@@ -40,9 +40,8 @@ tp = _load_module()
 
 # Short delays for CLI integration tests -- long enough for a local `cat`/
 # `printf`/`bash` to respond, short enough that the suite doesn't crawl.
-# See CliTimingTests.test_step_delay_is_not_cut_short_by_quiet_output for
-# why these can't be pushed much lower: drain() always waits the full
-# amount, it does not return early just because output went quiet.
+# drain()'s early-exit-on-quiet-output means these are an upper bound in
+# practice, not a fixed cost per step (see CliTimingTests).
 FAST = ["--connect-wait", "0.2", "--step-delay", "0.3", "--settle", "0.3"]
 
 
@@ -257,21 +256,15 @@ class CliIntegrationTests(unittest.TestCase):
 
 
 class CliTimingTests(unittest.TestCase):
-    def test_step_delay_is_not_cut_short_by_quiet_output(self):
-        """Pins the OBSERVED wait behavior of drain().
-
-        README says: "All three stop early once output goes quiet for
+    def test_step_delay_is_cut_short_once_output_goes_quiet(self):
+        """README: "All three stop early once output goes quiet for
         200ms, so raising them costs nothing when the target responds
-        fast." The implementation doesn't do that -- drain() polls with
-        select(..., 0.2) in a loop but only ever exits early on EOF or an
-        OSError, never on a quiet gap; it always consumes the full
-        `seconds` budget. This test targets `cat`, whose echo of a single
-        unterminated step is on the wire almost instantly, and confirms
-        the wait still runs the full step-delay -- i.e. the documented
-        "stops early once quiet" behavior does not currently exist. If
-        this test starts failing, the code grew the early-exit the docs
-        promise (great -- update this test) rather than the docs having
-        drifted further from the code.
+        fast." (see issue #1 -- drain() didn't do this for a while).
+
+        `cat`'s echo of a single unterminated step is on the wire almost
+        instantly and then goes quiet, so a generous --step-delay of 2s
+        should be cut well short of its full budget rather than consumed
+        in full.
         """
         t0 = time.time()
         run_cli(
@@ -279,7 +272,19 @@ class CliTimingTests(unittest.TestCase):
              "--settle", "0.1", "hi"]
         )
         elapsed = time.time() - t0
-        self.assertGreaterEqual(elapsed, 2.0)
+        self.assertLess(elapsed, 1.5)
+
+    def test_step_delay_still_runs_full_budget_when_target_stays_silent(self):
+        """The early exit only fires after some output has arrived --
+        a target that produces nothing at all (e.g. still starting up)
+        must still get the full wait, not an instant bail-out."""
+        t0 = time.time()
+        run_cli(
+            ["--cmd", "bash -c 'sleep 5'", "--connect-wait", "1.2",
+             "--step-delay", "0.1", "--settle", "0.1", "x"]
+        )
+        elapsed = time.time() - t0
+        self.assertGreaterEqual(elapsed, 1.2)
 
 
 if __name__ == "__main__":
