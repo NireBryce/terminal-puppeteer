@@ -8,16 +8,23 @@
 
 ## What this is
 
-A single-file, stdlib-only CLI (`terminal-puppeteer.py`) that lets an LLM
-agent drive a real interactive program through a pty. Extracted 2026-08-24
-from `NireBryce/nixos-configs` (`flake/scripts/ssh-pty-drive.py`, built
-there to chase a real ble.sh/carapace completion bug — see that repo's
+A stdlib-only CLI that lets an LLM agent drive a real interactive program
+through a pty. `terminal-puppeteer.py` at the repo root is a thin entry
+point (`from terminal_puppeteer.cli import main`) kept only so
+`./terminal-puppeteer.py ...` keeps working without installing anything;
+the actual implementation is the `terminal_puppeteer/` package next to
+it — `keys.py` (the step vocabulary), `ansi.py` (escape stripping),
+`driver.py` (the pty/subprocess mechanics), `cli.py` (argparse + `main`).
+Extracted 2026-08-24 from `NireBryce/nixos-configs`
+(`flake/scripts/ssh-pty-drive.py`, built there to chase a real
+ble.sh/carapace completion bug — see that repo's
 `claude cave/lessons-learned.md` #39 and issue #72), generalized beyond
-SSH, and given tests and a real bug fix the same day by a second session
+SSH, given tests and a real bug fix the same day by a second session
 working directly in this repo (`drain()` never actually stopped early on
 quiet output, despite the README already claiming it did — issue #1, fixed
-in #2). Read `DEVLOG.md` before assuming you know the current state; it's
-short and it's exactly for this.
+in #2), and split from one file into this package later the same day once
+it grew past ~300 lines, for readability. Read `DEVLOG.md` before assuming
+you know the current state; it's short and it's exactly for this.
 
 ## Conventions
 
@@ -41,11 +48,33 @@ for the fuller account of why it keeps happening.)
 Matches the tool's own "no dependencies" stance in `README.md` — a test
 suite that needs `pip install` to run would quietly contradict the thing
 being tested. `tests/` has both unit tests (`encode_step`, `load_steps`,
-the `ANSI` regex) and CLI integration tests that run the real script
+the `ANSI` regex — `import`ed as the real submodules of the real
+`terminal_puppeteer` package now, the package split removed the old
+`importlib.util` load-by-path workaround the pre-refactor hyphenated
+single file needed) and CLI integration tests that run the real script
 against real pty targets (`cat`, `printf`, `bash`) and check stdout
 byte-for-byte — prefer that shape for anything that touches `run()` or
-`drain()`, since the whole point of this tool is real-target behavior, not
-mocked calls.
+`drain()`, since the whole point of this tool is real-target behavior,
+not mocked calls.
+
+**`terminal-puppeteer.py`'s hyphenated name is deliberate, not
+leftover — never rename it to match the package.** It was briefly
+renamed to `terminal_puppeteer.py` during the package-split refactor and
+that broke a real, verified case: `pyproject.toml`'s `script-files`
+installs the wrapper alone into `<venv>/bin/`, separate from
+`terminal_puppeteer/` (which `packages` installs into `site-packages`).
+A script's own directory is always first on `sys.path`, so a wrapper
+named identically to the package it imports shadows the real package
+with itself — a lone, non-package module — before Python ever reaches
+`site-packages`, raising `ModuleNotFoundError: ... 'terminal_puppeteer'
+is not a package`. A plain checkout never hits this (the sibling
+`terminal_puppeteer/` sitting right next to the wrapper wins), which is
+exactly why it wasn't caught until actually installing the built wheel
+into a scratch venv and running it for real — see `pyproject.toml`'s own
+comment on `[tool.setuptools]` for the fuller account. Test any future
+packaging change the same way: build the wheel, install it into a
+throwaway venv, run the installed command, don't just trust that running
+it in place still works.
 
 **"push" means the `ship` skill, not `git push origin main`.** Branch, PR,
 ask before merging, ask again before deleting the branch — two
@@ -83,5 +112,10 @@ a repo other than this one — don't assume from how the text reads.
 - `DEVLOG.md` — terse, reverse-chronological, one entry per logical
   change rather than per commit. Read it before picking work back up here;
   it exists so that isn't a full `git log` read every time.
+- `CONTRIBUTORS.md` / `STYLEGUIDE.md` — the outside-facing counterpart to
+  this file: who can contribute (explicitly including LLM agents) and
+  what "well-written" means for a submission from one. This file has the
+  mechanics for a session working directly in the repo; those two are for
+  anyone sending a PR or issue in from outside it.
 - `tests/` — run before every push regardless of what changed; see the
   `ship` skill's "is it green" step.

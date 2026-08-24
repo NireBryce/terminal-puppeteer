@@ -12,7 +12,12 @@ program that behaves differently piped than attached to a real terminal.
 An agent has no terminal of its own to hit those with — this is the
 stand-in.
 
-Stdlib only (`pty`, `subprocess`, `select`), no dependencies, one file.
+Stdlib only (`pty`, `subprocess`, `select`), no dependencies, no install
+needed to run in place: `terminal-puppeteer.py` is a thin entry point,
+`terminal_puppeteer/` next to it is the actual implementation, split by
+concern (`keys.py`, `ansi.py`, `driver.py`, `cli.py`) once it outgrew one
+file. Grab the whole directory, not just the script, if copying this
+elsewhere — the wrapper needs its sibling package to run.
 
 ## Provenance
 

@@ -11,17 +11,27 @@ dependencies = []
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-# terminal-puppeteer.py is meant to be run directly (see README's Quick
-# start), not imported -- its hyphenated filename isn't a valid Python
-# module name anyway. `script-files` installs it as-is onto PATH rather
-# than trying to package it as an importable module; without this,
-# `pip install .` previously produced a wheel with no code in it at all
-# (see issue #9).
+# terminal-puppeteer.py is a thin wrapper (see its own docstring) around
+# the real implementation in terminal_puppeteer/ -- both need installing.
+#
+# The wrapper's hyphenated name is deliberate, not leftover: it was
+# briefly renamed to terminal_puppeteer.py (matching the package) and
+# that broke a real, verified case. `script-files` installs the wrapper
+# alone into <venv>/bin/, separately from the package (which `packages`
+# installs into site-packages) -- a script's own directory is always
+# first on sys.path, so a wrapper named identically to the package it
+# imports shadows the real package with itself (a lone, non-package
+# module) before Python ever reaches site-packages, raising
+# "ModuleNotFoundError: ... 'terminal_puppeteer' is not a package". A
+# plain checkout never hits this (the sibling terminal_puppeteer/
+# directory sitting right next to the wrapper wins over the wrapper
+# itself), which is exactly why it wasn't caught until actually
+# installing the built wheel into a scratch venv and running it for
+# real, not just running it in place. Keeping the wrapper's name
+# different from the package's makes the collision impossible instead
+# of avoided by directory-layout luck.
 [tool.setuptools]
-# Without this, setuptools' automatic package-discovery treats man/ as an
-# implicit package and copies it into the wheel root too, on top of the
-# data-files copy below -- there are no actual Python packages here.
-packages = []
+packages = ["terminal_puppeteer"]
 script-files = ["terminal-puppeteer.py"]
 
 [tool.setuptools.data-files]
