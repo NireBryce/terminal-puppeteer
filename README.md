@@ -40,6 +40,10 @@ Output is everything the pty produced, ANSI escape sequences stripped by
 default (`--raw` to keep them) — read it the way you'd read a terminal
 transcript, in order, prompt lines and command output interleaved.
 
+Full reference: `--help`, or `man ./man/terminal-puppeteer.1` (installed
+to the usual `man(1)` location if this was `pip install`ed rather than
+run in place).
+
 ## Targets
 
 Exactly one of these, always:
@@ -120,6 +124,9 @@ investigated.
 `DEVLOG.md` — terse, reverse-chronological record of what changed in
 this project and why, for picking the work back up without re-reading
 the whole git log.
+
+`man/terminal-puppeteer.1` — the same reference as this README in
+`man(1)` form: `man ./man/terminal-puppeteer.1` to read it in place.
 
 ## History
 

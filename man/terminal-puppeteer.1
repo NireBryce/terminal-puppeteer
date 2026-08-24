@@ -1,0 +1,246 @@
+.TH TERMINAL-PUPPETEER 1 "2026-08-24" "terminal-puppeteer 0.1.0" "User Commands"
+.SH NAME
+terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
+.SH SYNOPSIS
+.B terminal-puppeteer.py
+.BR \-\-ssh " " \fIHOST\fR
+[\fB\-\-ssh\-arg\fR \fIARG\fR] ...
+.RB [ \-\-steps\-file " " \fIPATH\fR]
+.RB [ \-\-step\-delay " " \fISECONDS\fR]
+.RB [ \-\-settle " " \fISECONDS\fR]
+.RB [ \-\-connect\-wait " " \fISECONDS\fR]
+.RB [ \-\-raw ]
+.RI [ STEP " ...]"
+.br
+.B terminal-puppeteer.py
+.BR \-\-cmd " " \fICOMMAND\fR
+.RB [ \-\-steps\-file " " \fIPATH\fR]
+.RB [ \-\-step\-delay " " \fISECONDS\fR]
+.RB [ \-\-settle " " \fISECONDS\fR]
+.RB [ \-\-connect\-wait " " \fISECONDS\fR]
+.RB [ \-\-raw ]
+.RI [ STEP " ...]"
+.SH DESCRIPTION
+.B terminal-puppeteer.py
+opens a real pseudo-terminal (pty), spawns a target program attached to
+it, and sends the target actual keystrokes with delays between them, the
+way a person typing at a real terminal would \-\- then returns everything
+the pty produced as one transcript.
+.PP
+It exists for a class of bug a plain, non-interactive tool call cannot
+reach:
+.TP
+.B no pty
+Without a pty, a remote shell's \fB$\-\fR never contains \fBi\fR (nothing
+gated on \fB[[ $\- == *i* ]]\fR runs), and plenty of local programs detect
+a non-tty stdin/stdout and change behavior outright.
+.B \-\-ssh
+and
+.B \-\-cmd
+both allocate a real pty, not a pipe.
+.TP
+.B one shot
+\fBssh host 'cmd'\fR or a single non-interactive tool call sends one
+command and reads one reply. Bugs that depend on what's already in
+flight \-\- a live auto-suggestion mid-keystroke, a background job, one
+key landing while another is still being processed \-\- need actual
+keystrokes sent while the target process keeps running, not a full line
+handed over at once.
+.TP
+.B bulk paste != typing
+Writing a whole multi-line string to the pty in one shot is
+.I not
+the same as a human typing it: without bracketed-paste framing, each
+embedded newline submits whatever line precedes it right then, so a
+multi-line function definition sent as one write arrives as several
+broken partial commands. Keep multi-line payloads to a
+.B "source /path/to/file"
+step instead of typing the file's contents \-\- see \fBEXAMPLES\fR.
+.SH TARGET
+Exactly one of \fB\-\-ssh\fR or \fB\-\-cmd\fR is required.
+.TP
+.BI \-\-ssh " HOST"
+Shorthand for \fB\-\-cmd "ssh \-tt HOST"\fR.
+.B \-\-ssh\-arg
+adds an extra argument to the underlying \fBssh\fR invocation (repeatable,
+only valid with \fB\-\-ssh\fR) \-\- e.g. two instances of
+\fB\-\-ssh\-arg\fR to pass \fB\-o BatchMode=yes\fR for a non-interactive
+auth check.
+.TP
+.BI \-\-cmd " COMMAND"
+Any command, shell-quoted as one string and split with Python's
+\fBshlex.split\fR (so quote it the way you'd type it:
+\fB\-\-cmd 'bash \-i'\fR,
+\fB\-\-cmd 'tmux attach \-t work'\fR).
+Runs local to wherever \fBterminal-puppeteer.py\fR itself runs.
+.SH STEPS
+Everything after the target is a flat list of
+.IR STEP s,
+applied in order. A step is either literal text, sent to the pty exactly
+as written with no added newline, or one of a closed set of named keys
+(matched case-insensitively):
+.TS
+allbox tab(:);
+lb l.
+Name:Sends
+TAB:\\t
+ENTER, RET, CR:\\r
+NEWLINE:\\n
+CTRL\-C:\\x03
+CTRL\-D:\\x04
+CTRL\-R:\\x12
+ESC:\\x1b
+BACKSPACE:\\x7f
+.TE
+.PP
+.B No step ever gets an implicit trailing newline.
+That is what lets a step be a bare \fBTAB\fR or a partial line someone's
+about to keep typing \-\- but it also means a command meant to actually
+run needs its own explicit \fBENTER\fR step, or it just sits typed and
+unsubmitted for the rest of the run: \fB'git status' ENTER\fR, not
+\fB'git status'\fR alone.
+.TP
+.BI \-\-steps\-file " PATH"
+Append more steps, one per line, on top of any given on the command
+line \-\- blank lines skipped, \fB#\fR-prefixed lines are comments.
+Useful once a repro has more steps than comfortable as shell arguments,
+or needs to be versioned/reused.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show a help message (usage synopsis plus every option below) and exit.
+.TP
+.BI \-\-step\-delay " SECONDS"
+Seconds to wait for output after each step, before sending the next one
+(default: \fB1.5\fR).
+.TP
+.BI \-\-settle " SECONDS"
+Extra seconds to wait after the last step, for anything still catching
+up (default: \fB1.5\fR).
+.TP
+.BI \-\-connect\-wait " SECONDS"
+Seconds to wait for a banner or shell prompt before the first step
+(default: \fB3.0\fR).
+.TP
+.B \-\-raw
+Print output with ANSI escape sequences intact, instead of the default
+of stripping them.
+.SH TIMING
+Every step is followed by up to \fB\-\-step\-delay\fR seconds of draining
+pty output before the next one is sent; \fB\-\-connect\-wait\fR is the
+same kind of wait before the
+.I first
+step, to let a login banner or shell prompt show up; \fB\-\-settle\fR is
+one more wait after the
+.I last
+step. All three stop early once output goes quiet for 200ms, so raising
+them costs nothing when the target responds fast \-\- the defaults exist
+for the slow case.
+.PP
+Raise \fB\-\-step\-delay\fR/\fB\-\-settle\fR when the output looks
+truncated or the next step's echo appears mashed into the previous
+step's output; that is usually the delay running out before the target
+actually finished responding, not a real ordering bug.
+.SH OUTPUT
+Output is everything the pty produced, ANSI escape sequences stripped by
+default (\fB\-\-raw\fR to keep them), written to standard output followed
+by a trailing newline. Read it the way you'd read a terminal transcript:
+prompt lines and command output interleaved, in the order they arrived.
+.SH "EXIT BEHAVIOR"
+On its way out this
+.B only ever terminates the target process
+(SIGTERM, then SIGKILL after 5 seconds if it's still alive) \-\- it never
+types anything to close it. There is no single "graceful quit" keystroke
+that is correct across every target (\fBexit\fR+\fBENTER\fR for a shell,
+\fBCTRL\-D\fR for a REPL, a different key entirely for \fBtmux\fR), so
+this does not guess. Include whatever quit step actually applies to your
+target as the last entry in your own step list if a clean logout matters
+for what you're checking.
+.SH "EXIT STATUS"
+.TP
+.B 0
+The target ran to completion (or was terminated on schedule) and output
+was captured and printed.
+.TP
+.B 2
+A command-line usage error \-\- no target given, both \fB\-\-ssh\fR and
+\fB\-\-cmd\fR given, no steps given, a malformed \fB\-\-cmd\fR, a
+\fB\-\-steps\-file\fR that doesn't exist, or similar. A one-line message
+plus the usage synopsis is printed to standard error.
+.TP
+.B 1
+An unexpected error, e.g. the command named by \fB\-\-cmd\fR does not
+exist on this machine. A Python traceback is printed to standard error.
+.SH EXAMPLES
+.PP
+Drive a remote shell over SSH, the case this tool was built for:
+.PP
+.RS
+.EX
+terminal\-puppeteer.py \-\-ssh myhost 'git co' TAB CTRL\-C
+.EE
+.RE
+.PP
+Any local interactive program, not just a remote shell:
+.PP
+.RS
+.EX
+terminal\-puppeteer.py \-\-cmd 'bash \-i' 'echo $\-' ENTER
+terminal\-puppeteer.py \-\-cmd 'tmux attach \-t work' 'echo hi' ENTER
+.EE
+.RE
+.PP
+A scripted multi-step repro, read from a file instead of argv:
+.PP
+.RS
+.EX
+terminal\-puppeteer.py \-\-ssh myhost \-\-steps\-file repro.txt
+.EE
+.RE
+.PP
+Defining something multi-line: write it to a file first, then source it
+as a single step, rather than typing the file's contents:
+.PP
+.RS
+.EX
+terminal\-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
+.EE
+.RE
+.SH CAVEATS
+This tool's pty has no terminal emulator behind it, so escape sequences
+a target sends to probe terminal capabilities (cursor position reports,
+device attribute queries) go unanswered \-\- raw, unhandled bytes sitting
+at the start of a capture against a program that probes on startup
+(ble.sh, for one) is expected, not a bug in whatever is actually being
+tested. A byte that renders invisible in a terminal transcript (a
+control byte with no glyph) is still there and can still matter; when a
+captured value needs to be byte-exact, pipe it through \fBod\fR(1) rather
+than trusting what printed. See
+.B NOTES.md
+in the project repository for the fuller account, including a real bug
+this cost real time on.
+.SH FILES
+.TP
+.I PATH
+given to \fB\-\-steps\-file\fR: one step per line, blank lines and
+\fB#\fR-prefixed comment lines skipped, everything else stripped of
+surrounding whitespace and treated exactly like a positional \fISTEP\fR.
+.SH "SEE ALSO"
+.BR ssh (1),
+.BR tmux (1),
+.BR pty (7)
+.PP
+.B README.md,
+.B NOTES.md,
+and
+.B DEVLOG.md
+in the project repository: what the tool does and how to invoke it,
+gotchas from actually using it against a real bug, and a running record
+of what changed in the project and why, respectively.
+.SH BUGS
+Report issues at
+.BR https://github.com/NireBryce/terminal\-puppeteer/issues .
+.SH AUTHOR
+Originally built by an agent (Claude Code) to reproduce a ble.sh/bash
+completion bug that only ever showed up while actually typing at a real
+terminal, over SSH.

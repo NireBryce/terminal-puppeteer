@@ -196,6 +196,16 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(b"--ssh-arg only applies to --ssh", result.stderr)
 
+    def test_help_does_not_print_the_description_twice(self):
+        # The description passed to ArgumentParser and __doc__'s first
+        # paragraph used to be the exact same sentence, so --help printed
+        # it once as the description and again as the epilog's own first
+        # line.
+        result = run_cli(["--help"])
+        self.assertEqual(result.returncode, 0)
+        needle = b"Let an LLM agent drive a real interactive program through a pty."
+        self.assertEqual(result.stdout.count(needle), 1)
+
     def test_malformed_cmd_is_a_clean_error_not_a_traceback(self):
         # Issue #10: an unbalanced quote used to raise a raw
         # ValueError/traceback out of shlex.split instead of the

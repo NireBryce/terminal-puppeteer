@@ -160,10 +160,13 @@ def run(argv, steps, step_delay, settle, connect_wait):
 
 
 def main():
+    # __doc__'s first paragraph is this exact sentence -- drop it from the
+    # epilog so --help doesn't print it twice (once as the description
+    # right under usage, once again as the epilog's own opening line).
     p = argparse.ArgumentParser(
         description='Let an LLM agent drive a real interactive program through a pty.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        epilog=__doc__.split('\n\n', 1)[1],
     )
     target = p.add_mutually_exclusive_group(required=True)
     target.add_argument('--ssh', metavar='HOST', help='shorthand for --cmd "ssh -tt HOST"')
