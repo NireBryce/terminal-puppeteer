@@ -1,25 +1,35 @@
-.TH TERMINAL-PUPPETEER 1 "2026-08-24" "terminal-puppeteer 0.1.0" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-08-24" "terminal-puppeteer 0.2.0" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
 .B terminal-puppeteer.py
 .BR \-\-ssh " " \fIHOST\fR
 [\fB\-\-ssh\-arg\fR \fIARG\fR] ...
+.RB [ \-\-env " " \fIKEY=VALUE\fR] ...
 .RB [ \-\-steps\-file " " \fIPATH\fR]
 .RB [ \-\-step\-delay " " \fISECONDS\fR]
 .RB [ \-\-settle " " \fISECONDS\fR]
 .RB [ \-\-connect\-wait " " \fISECONDS\fR]
 .RB [ \-\-raw ]
+.RB [ \-v ]
 .RI [ STEP " ...]"
 .br
 .B terminal-puppeteer.py
 .BR \-\-cmd " " \fICOMMAND\fR
+.RB [ \-\-env " " \fIKEY=VALUE\fR] ...
 .RB [ \-\-steps\-file " " \fIPATH\fR]
 .RB [ \-\-step\-delay " " \fISECONDS\fR]
 .RB [ \-\-settle " " \fISECONDS\fR]
 .RB [ \-\-connect\-wait " " \fISECONDS\fR]
 .RB [ \-\-raw ]
+.RB [ \-v ]
 .RI [ STEP " ...]"
+.br
+.B terminal-puppeteer.py
+.B \-\-list\-keys
+.br
+.B terminal-puppeteer.py
+.B \-\-version
 .SH DESCRIPTION
 .B terminal-puppeteer.py
 opens a real pseudo-terminal (pty), spawns a target program attached to
@@ -86,12 +96,28 @@ Name:Sends
 TAB:\\t
 ENTER, RET, CR:\\r
 NEWLINE:\\n
-CTRL\-C:\\x03
-CTRL\-D:\\x04
-CTRL\-R:\\x12
 ESC:\\x1b
 BACKSPACE:\\x7f
+UP, DOWN:\\x1b[A , \\x1b[B
+LEFT, RIGHT:\\x1b[D , \\x1b[C
+HOME, END:\\x1b[H , \\x1b[F
+DELETE:\\x1b[3~
+PGUP, PGDN:\\x1b[5~ , \\x1b[6~
+CTRL\-\fIletter\fR:any A\-Z, e.g. CTRL\-C = \\x03
 .TE
+.PP
+.B \-\-list\-keys
+prints this same table (from the same data the tool itself matches
+against, not transcribed separately here) and exits.
+.B CTRL\-\fIletter\fR
+is not a fixed handful \-\- any letter A\-Z works
+(\fBCTRL\-U\fR, \fBCTRL\-L\fR, \fBCTRL\-W\fR, ...), computed the same way
+a real terminal computes a control character.
+.PP
+A step that doesn't match any known key is still sent as literal text,
+same as always \-\- but if it's close to one (a missing hyphen, a typo)
+a warning is printed to standard error saying so. Advisory only: what
+gets sent is unchanged either way.
 .PP
 .B No step ever gets an implicit trailing newline.
 That is what lets a step be a bare \fBTAB\fR or a partial line someone's
@@ -102,13 +128,48 @@ unsubmitted for the rest of the run: \fB'git status' ENTER\fR, not
 .TP
 .BI \-\-steps\-file " PATH"
 Append more steps, one per line, on top of any given on the command
-line \-\- blank lines skipped, \fB#\fR-prefixed lines are comments.
-Useful once a repro has more steps than comfortable as shell arguments,
-or needs to be versioned/reused.
+line \-\- blank lines skipped, \fB#\fR-prefixed lines are comments,
+.I PATH
+of
+.B \-
+reads from standard input instead of a file. Useful once a repro has
+more steps than comfortable as shell arguments, or needs to be
+versioned/reused.
+.SH ENVIRONMENT
+.BI \-\-env " KEY=VALUE"
+(repeatable) sets an extra environment variable for the target process,
+merged onto the inherited environment. Most useful for something that
+has to be true
+.I before
+the target starts, which a step can't guarantee:
+.B \-\-env TERM=dumb
+avoids some terminal-capability probing a program checking
+.B $TERM
+might otherwise do on startup (see
+.B CAVEATS
+and
+.B NOTES.md
+in the project repository) \-\- an early
+.B "'export TERM=dumb' ENTER"
+step sets the same variable, but only after the shell is already up and
+reading input, racing whatever probe happens first.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
 Show a help message (usage synopsis plus every option below) and exit.
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.B \-\-list\-keys
+Print the table of named keys (see \fBSTEPS\fR) and exit. Needs neither
+\fB\-\-ssh\fR/\fB\-\-cmd\fR nor any \fISTEP\fR.
+.TP
+.BI \-\-env " KEY=VALUE"
+Extra environment variable for the target process, merged onto the
+inherited environment (repeatable; not a replacement \-\- \fBPATH\fR and
+everything else the target would normally see is still there). See
+\fBENVIRONMENT\fR.
 .TP
 .BI \-\-step\-delay " SECONDS"
 Seconds to wait for output after each step, before sending the next one
@@ -125,6 +186,11 @@ Seconds to wait for a banner or shell prompt before the first step
 .B \-\-raw
 Print output with ANSI escape sequences intact, instead of the default
 of stripping them.
+.TP
+.BR \-v ", " \-\-verbose
+Print each step to standard error as it is sent (\fB>> TAB\fR), for
+watching a long or slow run happen live instead of waiting for the whole
+transcript at the end. Standard output is unaffected either way.
 .SH TIMING
 Every step is followed by up to \fB\-\-step\-delay\fR seconds of draining
 pty output before the next one is sent; \fB\-\-connect\-wait\fR is the
@@ -208,13 +274,30 @@ as a single step, rather than typing the file's contents:
 terminal\-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
 .EE
 .RE
+.PP
+Avoiding some terminal-capability probing before it can even happen
+(see \fBCAVEATS\fR), and checking what a key name actually sends:
+.PP
+.RS
+.EX
+terminal\-puppeteer.py \-\-ssh myhost \-\-env TERM=dumb 'echo hi' ENTER
+terminal\-puppeteer.py \-\-list\-keys
+.EE
+.RE
 .SH CAVEATS
 This tool's pty has no terminal emulator behind it, so escape sequences
 a target sends to probe terminal capabilities (cursor position reports,
 device attribute queries) go unanswered \-\- raw, unhandled bytes sitting
 at the start of a capture against a program that probes on startup
 (ble.sh, for one) is expected, not a bug in whatever is actually being
-tested. A byte that renders invisible in a terminal transcript (a
+tested. Setting
+.B \-\-env TERM=dumb
+avoids some of this for programs that check
+.B $TERM
+before deciding whether to probe at all \-\- in the target's environment
+from the moment it starts, unlike the same variable set via an early
+step, which still races whatever probing happens before that step
+lands. A byte that renders invisible in a terminal transcript (a
 control byte with no glyph) is still there and can still matter; when a
 captured value needs to be byte-exact, pipe it through \fBod\fR(1) rather
 than trusting what printed. See
@@ -227,6 +310,10 @@ this cost real time on.
 given to \fB\-\-steps\-file\fR: one step per line, blank lines and
 \fB#\fR-prefixed comment lines skipped, everything else stripped of
 surrounding whitespace and treated exactly like a positional \fISTEP\fR.
+.I PATH
+of
+.B \-
+reads standard input instead.
 .SH "SEE ALSO"
 .BR ssh (1),
 .BR tmux (1),
