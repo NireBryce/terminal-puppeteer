@@ -11,3 +11,7 @@ wheels/
 
 # Editor
 .vscode/
+
+# Nix build output symlinks
+result
+result-*
