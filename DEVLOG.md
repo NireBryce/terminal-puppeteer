@@ -13,6 +13,22 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — CLAUDE.md and agent-facing skills, ported from nixos-configs
+
+- Added `CLAUDE.md` and four skills (`ship`, `propose-issue`,
+  `investigate-bug`, `new-skill`), adapted from
+  `NireBryce/nixos-configs`'s own copies rather than pasted verbatim: the
+  commit-trailer rule (no model name — this repo had already drifted on
+  it, 4 of the first 8 commits), the never-file-outside-this-repo rule,
+  the GitHub `owner/repo#number` autolink note, and the two-confirmation
+  `ship` flow, all re-grounded in this repo's actual state (no branch
+  ruleset, no `wiki/`/`lessons-learned.md` — `DEVLOG.md`/`NOTES.md` play
+  that role here, and this repo has been issue-native from the start
+  rather than growing into it).
+- Found incidentally while verifying the `ship` skill's own "is it green"
+  step against the real test suite: `test_raw_flag_preserves_ansi` fails
+  consistently. Filed as #4, not fixed here.
+
 ## 2026-08-24 — Test suite + drain() early-exit fix
 
 - Added `tests/` (stdlib `unittest`, no pytest — matches the project's
