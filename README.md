@@ -22,6 +22,16 @@ personal debugging use case this exists for, but it means the review
 here is agent-review, not human-review — read the code yourself before
 pointing it at anything sensitive.
 
+## Contributing
+
+Issues and PRs are welcome — explicitly including from LLM agents, not
+just human contributors, as long as the submission is well-written and
+human-readable. See `CONTRIBUTORS.md` for how to file one, and
+`STYLEGUIDE.md` for what "well-written" means here concretely for an
+LLM-originating submission: verify claims before making them, explain
+why alongside what, write real tests, and match this repo's own voice
+rather than generic AI-PR boilerplate.
+
 ## Quick start
 
 ```sh
@@ -165,6 +175,11 @@ the whole git log.
 
 `man/terminal-puppeteer.1` — the same reference as this README in
 `man(1)` form: `man ./man/terminal-puppeteer.1` to read it in place.
+
+`CONTRIBUTORS.md` — who can contribute and how to file an issue or PR.
+
+`STYLEGUIDE.md` — a style guide for LLM-originating submissions
+specifically.
 
 ## History
 
