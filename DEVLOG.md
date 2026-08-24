@@ -13,6 +13,46 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Full-repo review: 5 issues filed, fixed, and closed same session
+
+- Requested review of the whole repo (script, tests, all four docs,
+  the four skills) by a session that hadn't touched this repo before.
+  Verified everything empirically rather than reading and trusting:
+  ran the suite, built the wheel, sent real signals, tried real bad
+  input.
+- Filed #8–#12, then fixed and closed all five in the same session
+  (#13–#17):
+  - **#8/#13**: `run()` leaked the target process if the tool itself
+    was interrupted (Ctrl+C, or any exception mid-drain) — cleanup only
+    ran on a normal return. Reproduced directly with `pgrep` against a
+    marked target process before fixing. Wrapped the drain loop in
+    try/finally. The regression test needed its own fix along the way:
+    interrupting within ~0.2s of the target's own startup lands in a
+    flaky window unrelated to the bug (found by scanning interrupt
+    delays 0.0s–2.0s against the confirmed-unfixed code); the test now
+    lands the interrupt well past that window.
+  - **#9/#15**: `pyproject.toml` had no `[build-system]` table and
+    nothing telling setuptools to include `terminal-puppeteer.py`
+    (hyphenated filename, not a valid module name) — `pip install .`
+    silently produced a wheel with zero code. Verified with `uv build`
+    + `python3 -m zipfile -l` before and after. Fixed via
+    `[tool.setuptools] script-files`, verified by installing the built
+    wheel into a scratch venv and actually running the installed
+    script.
+  - **#10/#14**: a malformed `--cmd` (unbalanced quote) or a missing
+    `--steps-file` path crashed with a raw traceback instead of the
+    `p.error()` style every other bad input in `main()` gets. Both now
+    routed through `p.error()`.
+  - **#11/#16**: no `LICENSE` on a public repo. Added MIT (Elly's
+    choice, asked directly) plus the matching `pyproject.toml` field.
+  - **#12/#17**: nothing ran `tests/` automatically. Added
+    `.github/workflows/test.yml` (ubuntu-latest, Python 3.9 + 3.13, no
+    install step) — confirmed it actually passes by watching the run
+    on its own PR before merging, not just trusting the YAML parses.
+- All five landed via the `ship` skill's two-confirmation flow, merged
+  as five separate PRs (not squashed) so each fix's own reasoning stays
+  attached in `git log`.
+
 ## 2026-08-24 — Fixed #4: a race, not just a flaky raw-flag test
 
 - Both `test_ansi_stripped_by_default` and `test_raw_flag_preserves_ansi`
