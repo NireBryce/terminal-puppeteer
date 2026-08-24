@@ -195,6 +195,13 @@ the whole git log.
 `STYLEGUIDE.md` — a style guide for LLM-originating submissions
 specifically.
 
+`flake.nix`/`package.nix`/`default.nix` — the Nix packaging behind the
+"Nix:" line above. `flake.nix` is the real definition (outputs:
+`packages`, `apps` for `nix run`, `devShells`); `package.nix` is the
+actual derivation, factored out so `default.nix`'s `flake-compat` shim
+can build the same thing for `nix-build` without flakes, without
+duplicating the package definition itself.
+
 ## History
 
 Extracted from `NireBryce/nixos-configs` (`flake/scripts/ssh-pty-drive.py`,

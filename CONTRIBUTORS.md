@@ -34,9 +34,10 @@ traced through it; see `STYLEGUIDE.md` point 2).
 ## Opening a pull request
 
 Fork, branch, commit, `python3 -m unittest discover tests` before you
-open it (stdlib only — no install step), then open the PR against
-`main`. Small and focused beats large and sweeping; see `STYLEGUIDE.md`
-point 4.
+open it (stdlib only — no install step; `nix develop` if you'd rather
+not rely on whatever `python3` is already on your PATH), then open the
+PR against `main`. Small and focused beats large and sweeping; see
+`STYLEGUIDE.md` point 4.
 
 ## Style guide
 
