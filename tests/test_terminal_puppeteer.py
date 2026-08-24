@@ -216,13 +216,19 @@ class CliIntegrationTests(unittest.TestCase):
         result = run_cli(["--cmd", "cat", *FAST, "hi", "enter"])
         self.assertEqual(result.stdout, b"hi\r\nhi\r\n\n")
 
+    # `printf ...; cat`, not bare `printf ...`: a bare one-shot printf exits
+    # (and closes its end of the pty) as soon as it's done printing, racing
+    # the "x" step sent right after it -- issue #4, seen as an intermittent
+    # dropped `x` on both of these tests, not just this one. `cat` keeps the
+    # target alive to reliably receive and echo the step once printf's
+    # output is already flushed, removing the race instead of tolerating it.
     def test_ansi_stripped_by_default(self):
-        cmd = "printf 'a\\033[31mb\\033[0mc'"
+        cmd = "bash -c \"printf 'a\\033[31mb\\033[0mc'; cat\""
         result = run_cli(["--cmd", cmd, *FAST, "x"])
         self.assertEqual(result.stdout, b"abcx\n")
 
     def test_raw_flag_preserves_ansi(self):
-        cmd = "printf 'a\\033[31mb\\033[0mc'"
+        cmd = "bash -c \"printf 'a\\033[31mb\\033[0mc'; cat\""
         result = run_cli(["--raw", "--cmd", cmd, *FAST, "x"])
         self.assertEqual(result.stdout, b"a\x1b[31mb\x1b[0mcx\n")
 
