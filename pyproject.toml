@@ -18,4 +18,11 @@ build-backend = "setuptools.build_meta"
 # `pip install .` previously produced a wheel with no code in it at all
 # (see issue #9).
 [tool.setuptools]
+# Without this, setuptools' automatic package-discovery treats man/ as an
+# implicit package and copies it into the wheel root too, on top of the
+# data-files copy below -- there are no actual Python packages here.
+packages = []
 script-files = ["terminal-puppeteer.py"]
+
+[tool.setuptools.data-files]
+"share/man/man1" = ["man/terminal-puppeteer.1"]
