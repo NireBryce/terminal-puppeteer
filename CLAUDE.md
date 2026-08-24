@@ -60,21 +60,26 @@ not mocked calls.
 **`terminal-puppeteer.py`'s hyphenated name is deliberate, not
 leftover — never rename it to match the package.** It was briefly
 renamed to `terminal_puppeteer.py` during the package-split refactor and
-that broke a real, verified case: `pyproject.toml`'s `script-files`
-installs the wrapper alone into `<venv>/bin/`, separate from
-`terminal_puppeteer/` (which `packages` installs into `site-packages`).
-A script's own directory is always first on `sys.path`, so a wrapper
-named identically to the package it imports shadows the real package
-with itself — a lone, non-package module — before Python ever reaches
-`site-packages`, raising `ModuleNotFoundError: ... 'terminal_puppeteer'
-is not a package`. A plain checkout never hits this (the sibling
-`terminal_puppeteer/` sitting right next to the wrapper wins), which is
-exactly why it wasn't caught until actually installing the built wheel
-into a scratch venv and running it for real — see `pyproject.toml`'s own
-comment on `[tool.setuptools]` for the fuller account. Test any future
-packaging change the same way: build the wheel, install it into a
-throwaway venv, run the installed command, don't just trust that running
-it in place still works.
+that broke a real, verified case: at the time, `pyproject.toml`'s
+`script-files` installed the wrapper alone into `<venv>/bin/`, separate
+from `terminal_puppeteer/` (which `packages` installs into
+`site-packages`). A script's own directory is always first on
+`sys.path`, so a wrapper named identically to the package it imports
+shadowed the real package with itself — a lone, non-package module —
+before Python ever reached `site-packages`, raising `ModuleNotFoundError:
+... 'terminal_puppeteer' is not a package`. A plain checkout never hit
+this (the sibling `terminal_puppeteer/` sitting right next to the
+wrapper won), which is exactly why it wasn't caught until actually
+installing the built wheel into a scratch venv and running it for real.
+`script-files` is gone now — `[project.scripts]` replaced it (the
+idiomatic mechanism; see `pyproject.toml`'s own comment) precisely
+because a *generated* entry-point script doesn't have this failure mode
+at all, so the collision can't happen via the current config either way
+— but the underlying rule still holds and costs nothing to keep: don't
+give the root wrapper the same name as the package it imports. Test any
+future packaging change the same way this one was: build the wheel,
+install it into a throwaway venv, run the installed command, don't just
+trust that running it in place still works.
 
 **"push" means the `ship` skill, not `git push origin main`.** Branch, PR,
 ask before merging, ask again before deleting the branch — two
