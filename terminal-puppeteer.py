@@ -135,9 +135,17 @@ def run(argv, steps, step_delay, settle, connect_wait):
     # `target` is the spawned program's end, same as README.md/NOTES.md's
     # own vocabulary for "the thing being driven".
     controller, target = pty.openpty()
-    proc = subprocess.Popen(
-        argv, stdin=target, stdout=target, stderr=target, close_fds=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=target, stdout=target, stderr=target, close_fds=True,
+        )
+    except OSError:
+        # argv[0] doesn't exist, isn't executable, etc. -- close both ends
+        # ourselves (nothing else will) and let the caller decide how to
+        # report it; see issue #21.
+        os.close(target)
+        os.close(controller)
+        raise
     os.close(target)
     try:
         out = drain(controller, connect_wait)
@@ -198,7 +206,13 @@ def main():
     if not steps:
         p.error('no steps given (positionally or via --steps-file)')
 
-    out = run(argv, steps, args.step_delay, args.settle, args.connect_wait)
+    try:
+        out = run(argv, steps, args.step_delay, args.settle, args.connect_wait)
+    except OSError as e:
+        # argv[0] not found, not executable, etc. -- a real runtime failure,
+        # not a usage mistake, so no usage block (p.error()'s always-exit-2
+        # style doesn't fit here): just the message, exit 1. See issue #21.
+        p.exit(1, f'{p.prog}: error: could not start {argv[0]!r}: {e.strerror or e}\n')
     if not args.raw:
         out = ANSI.sub(b'', out)
     sys.stdout.buffer.write(out)

@@ -169,8 +169,10 @@ A command-line usage error \-\- no target given, both \fB\-\-ssh\fR and
 plus the usage synopsis is printed to standard error.
 .TP
 .B 1
-An unexpected error, e.g. the command named by \fB\-\-cmd\fR does not
-exist on this machine. A Python traceback is printed to standard error.
+The command named by \fB\-\-cmd\fR (or \fBssh\fR itself, for \fB\-\-ssh\fR)
+could not be started \-\- not found, not executable, or similar. A
+one-line message is printed to standard error, no usage block. Any other
+unexpected error still prints a Python traceback.
 .SH EXAMPLES
 .PP
 Drive a remote shell over SSH, the case this tool was built for:

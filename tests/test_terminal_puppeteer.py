@@ -224,6 +224,20 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertIn(b"--steps-file:", result.stderr)
         self.assertNotIn(b"Traceback", result.stderr)
 
+    def test_cmd_naming_a_nonexistent_executable_is_a_clean_error(self):
+        # Issue #21: same class of bug as #10 again, but a runtime failure
+        # (subprocess.Popen can't find argv[0]) rather than a usage-time
+        # one -- not routed through p.error(), so exit 1 (not 2) and no
+        # usage block, just the message.
+        result = run_cli(
+            ["--cmd", "tp-definitely-not-a-real-command-xyz", "x", "ENTER"]
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"could not start", result.stderr)
+        self.assertIn(b"tp-definitely-not-a-real-command-xyz", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertNotIn(b"usage:", result.stderr)
+
 
 class CliIntegrationTests(unittest.TestCase):
     """End-to-end runs against a local `cat` (or similar) under a real pty."""
