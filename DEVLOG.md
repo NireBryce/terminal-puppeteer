@@ -13,6 +13,26 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — [project.scripts] replaces script-files (#30)
+
+- Follow-up question after the modularization/naming-collision episode:
+  "what would be idiomatic" for the packaging side. `script-files`
+  (copying the raw wrapper onto PATH) is the legacy setuptools
+  mechanism; `[project.scripts]` is the standard one. Switched --
+  `pip install .` now gives a generated `terminal-puppeteer` command
+  (no `.py`), not a copy of the source file.
+- `terminal-puppeteer.py` at the repo root is unchanged (still the only
+  way to run without installing). Installed vs. in-place now
+  deliberately have different names, which also means the earlier
+  wrapper/package naming-collision bug can't recur through this
+  mechanism at all -- a generated entry-point script is a fresh file
+  with its own name, nothing to collide with.
+- Verified the same way as the collision bug was found: built the
+  wheel, installed it into a scratch venv, ran the generated command
+  for real (`--version`, `--list-keys`, an actual pty run against
+  `cat`), confirmed the man page install path and the in-place wrapper
+  both still work.
+
 ## 2026-08-24 — Modularized into terminal_puppeteer/ (#28)
 
 - Asked to modularize (the ~325-line single file, up against the "one
