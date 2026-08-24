@@ -13,6 +13,22 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Documented the Nix files (#34)
+
+- Asked "is CI no strings attached, or drop it" (answered: keep it,
+  free on a public repo, the one real trade-off is now executing
+  external PRs' code on GitHub's runners, standard for any open repo),
+  then asked to fill in missing Nix documentation. `flake.nix`/
+  `package.nix`/`default.nix` had almost no comments -- added them,
+  matching this project's usual density elsewhere. `README.md`'s See
+  also was missing all three (every other doc file was listed);
+  `CONTRIBUTORS.md` didn't mention `nix develop`. Checked first whether
+  the man page needed a Nix mention too -- it never documented any
+  install method, not even `pip`, so no gap there.
+- Verified after adding comments, not assumed harmless: `nix flake
+  check`, a real `nix build`, and `nix-build default.nix` all still
+  succeed and the resulting binaries still run.
+
 ## 2026-08-24 — Nix flake + default.nix compat shim (#32)
 
 - Asked "which is best, pros/cons" (flake vs. plain `default.nix`)
