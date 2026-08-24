@@ -7,8 +7,9 @@ description: How to propose filing a GitHub issue when you notice a genuine bug 
 
 ## Applies to
 
-You're doing something else — reading `terminal-puppeteer.py`, checking a
-claim in `README.md`/`NOTES.md`, running the tests — and you notice an
+You're doing something else — reading `terminal-puppeteer.py` or the
+`terminal_puppeteer/` package, checking a claim in `README.md`/`NOTES.md`,
+running the tests — and you notice an
 actual defect along the way: a claim the code contradicts, a test that
 fails, dead code, a doc example that no longer works. Not something you
 were asked to look into (fix that directly and say so), and not a style

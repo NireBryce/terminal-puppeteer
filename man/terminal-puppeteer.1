@@ -245,7 +245,7 @@ Drive a remote shell over SSH, the case this tool was built for:
 .PP
 .RS
 .EX
-terminal\-puppeteer.py \-\-ssh myhost 'git co' TAB CTRL\-C
+terminal-puppeteer.py \-\-ssh myhost 'git co' TAB CTRL\-C
 .EE
 .RE
 .PP
@@ -253,8 +253,8 @@ Any local interactive program, not just a remote shell:
 .PP
 .RS
 .EX
-terminal\-puppeteer.py \-\-cmd 'bash \-i' 'echo $\-' ENTER
-terminal\-puppeteer.py \-\-cmd 'tmux attach \-t work' 'echo hi' ENTER
+terminal-puppeteer.py \-\-cmd 'bash \-i' 'echo $\-' ENTER
+terminal-puppeteer.py \-\-cmd 'tmux attach \-t work' 'echo hi' ENTER
 .EE
 .RE
 .PP
@@ -262,7 +262,7 @@ A scripted multi-step repro, read from a file instead of argv:
 .PP
 .RS
 .EX
-terminal\-puppeteer.py \-\-ssh myhost \-\-steps\-file repro.txt
+terminal-puppeteer.py \-\-ssh myhost \-\-steps\-file repro.txt
 .EE
 .RE
 .PP
@@ -271,7 +271,7 @@ as a single step, rather than typing the file's contents:
 .PP
 .RS
 .EX
-terminal\-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
+terminal-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
 .EE
 .RE
 .PP
@@ -280,8 +280,8 @@ Avoiding some terminal-capability probing before it can even happen
 .PP
 .RS
 .EX
-terminal\-puppeteer.py \-\-ssh myhost \-\-env TERM=dumb 'echo hi' ENTER
-terminal\-puppeteer.py \-\-list\-keys
+terminal-puppeteer.py \-\-ssh myhost \-\-env TERM=dumb 'echo hi' ENTER
+terminal-puppeteer.py \-\-list\-keys
 .EE
 .RE
 .SH CAVEATS

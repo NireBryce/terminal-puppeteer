@@ -43,7 +43,7 @@ A PR is a review gate someone reads, so don't open one on work you haven't
 checked:
 
 ```sh
-python3 -c "import ast; ast.parse(open('terminal-puppeteer.py').read())"
+python3 -m py_compile terminal-puppeteer.py terminal_puppeteer/*.py
 python3 -m unittest discover tests -v
 python3 terminal-puppeteer.py --help > /dev/null
 ```

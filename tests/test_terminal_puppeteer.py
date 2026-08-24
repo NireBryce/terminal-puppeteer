@@ -1,22 +1,20 @@
-"""Tests for terminal-puppeteer.py.
-
-The script is a single file with a hyphen in its name, so it's loaded by
-path via importlib rather than a normal package import.
+"""Tests for terminal_puppeteer.
 
 Two layers:
 
-- Unit tests for the pure helpers (`encode_step`, `load_steps`, the `ANSI`
-  regex) that don't need a pty at all.
-- CLI integration tests that actually invoke the script as a subprocess
-  against a local `--cmd` target (`cat`, `printf`, `bash`) with short
-  delays, and check the captured stdout byte-for-byte. These exercise the
-  real pty plumbing (`run()`, `drain()`, argparse validation, process
+- Unit tests for the pure helpers (`keys.encode_step`, `cli.load_steps`,
+  `ansi.ANSI`) that don't need a pty at all -- imported as the real
+  package (it's on sys.path via REPO_ROOT below), not loaded by path.
+- CLI integration tests that actually invoke `terminal-puppeteer.py` (the
+  thin wrapper at the repo root) as a subprocess against a local `--cmd`
+  target (`cat`, `printf`, `bash`) with short delays, and check the
+  captured stdout byte-for-byte. These exercise the real pty plumbing
+  (`driver.run`, `driver.drain`, argparse validation, process
   termination) the way an agent actually would.
 
 Deliberately stdlib-only (`unittest`), matching the project itself.
 """
 import contextlib
-import importlib.util
 import io
 import os
 import shutil
@@ -33,15 +31,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "terminal-puppeteer.py"
 
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location("terminal_puppeteer", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-tp = _load_module()
+sys.path.insert(0, str(REPO_ROOT))
+from terminal_puppeteer import ansi, cli, keys  # noqa: E402
 
 # Short delays for CLI integration tests -- long enough for a local `cat`/
 # `printf`/`bash` to respond, short enough that the suite doesn't crawl.
@@ -61,69 +52,69 @@ def run_cli(args, timeout=30):
 
 class EncodeStepTests(unittest.TestCase):
     def test_named_keys(self):
-        self.assertEqual(tp.encode_step("TAB"), b"\t")
-        self.assertEqual(tp.encode_step("ENTER"), b"\r")
-        self.assertEqual(tp.encode_step("RET"), b"\r")
-        self.assertEqual(tp.encode_step("CR"), b"\r")
-        self.assertEqual(tp.encode_step("NEWLINE"), b"\n")
-        self.assertEqual(tp.encode_step("CTRL-C"), b"\x03")
-        self.assertEqual(tp.encode_step("CTRL-D"), b"\x04")
-        self.assertEqual(tp.encode_step("CTRL-R"), b"\x12")
-        self.assertEqual(tp.encode_step("ESC"), b"\x1b")
-        self.assertEqual(tp.encode_step("BACKSPACE"), b"\x7f")
+        self.assertEqual(keys.encode_step("TAB"), b"\t")
+        self.assertEqual(keys.encode_step("ENTER"), b"\r")
+        self.assertEqual(keys.encode_step("RET"), b"\r")
+        self.assertEqual(keys.encode_step("CR"), b"\r")
+        self.assertEqual(keys.encode_step("NEWLINE"), b"\n")
+        self.assertEqual(keys.encode_step("CTRL-C"), b"\x03")
+        self.assertEqual(keys.encode_step("CTRL-D"), b"\x04")
+        self.assertEqual(keys.encode_step("CTRL-R"), b"\x12")
+        self.assertEqual(keys.encode_step("ESC"), b"\x1b")
+        self.assertEqual(keys.encode_step("BACKSPACE"), b"\x7f")
 
     def test_named_keys_are_case_insensitive(self):
-        self.assertEqual(tp.encode_step("tab"), b"\t")
-        self.assertEqual(tp.encode_step("Enter"), b"\r")
-        self.assertEqual(tp.encode_step("ctrl-c"), b"\x03")
-        self.assertEqual(tp.encode_step("Ctrl-d"), b"\x04")
+        self.assertEqual(keys.encode_step("tab"), b"\t")
+        self.assertEqual(keys.encode_step("Enter"), b"\r")
+        self.assertEqual(keys.encode_step("ctrl-c"), b"\x03")
+        self.assertEqual(keys.encode_step("Ctrl-d"), b"\x04")
 
     def test_arrow_and_navigation_keys(self):
-        self.assertEqual(tp.encode_step("UP"), b"\x1b[A")
-        self.assertEqual(tp.encode_step("DOWN"), b"\x1b[B")
-        self.assertEqual(tp.encode_step("RIGHT"), b"\x1b[C")
-        self.assertEqual(tp.encode_step("LEFT"), b"\x1b[D")
-        self.assertEqual(tp.encode_step("HOME"), b"\x1b[H")
-        self.assertEqual(tp.encode_step("END"), b"\x1b[F")
-        self.assertEqual(tp.encode_step("DELETE"), b"\x1b[3~")
-        self.assertEqual(tp.encode_step("PGUP"), b"\x1b[5~")
-        self.assertEqual(tp.encode_step("PGDN"), b"\x1b[6~")
-        self.assertEqual(tp.encode_step("down"), b"\x1b[B")  # case-insensitive too
+        self.assertEqual(keys.encode_step("UP"), b"\x1b[A")
+        self.assertEqual(keys.encode_step("DOWN"), b"\x1b[B")
+        self.assertEqual(keys.encode_step("RIGHT"), b"\x1b[C")
+        self.assertEqual(keys.encode_step("LEFT"), b"\x1b[D")
+        self.assertEqual(keys.encode_step("HOME"), b"\x1b[H")
+        self.assertEqual(keys.encode_step("END"), b"\x1b[F")
+        self.assertEqual(keys.encode_step("DELETE"), b"\x1b[3~")
+        self.assertEqual(keys.encode_step("PGUP"), b"\x1b[5~")
+        self.assertEqual(keys.encode_step("PGDN"), b"\x1b[6~")
+        self.assertEqual(keys.encode_step("down"), b"\x1b[B")  # case-insensitive too
 
     def test_ctrl_letter_is_general_not_just_cdr(self):
         # Used to be three hardcoded entries (C, D, R); now any A-Z via the
         # standard ord(letter) - 64 terminal control-code formula.
-        self.assertEqual(tp.encode_step("CTRL-A"), b"\x01")
-        self.assertEqual(tp.encode_step("CTRL-C"), b"\x03")  # old hardcoded value, unchanged
-        self.assertEqual(tp.encode_step("CTRL-D"), b"\x04")  # ditto
-        self.assertEqual(tp.encode_step("CTRL-L"), b"\x0c")
-        self.assertEqual(tp.encode_step("CTRL-R"), b"\x12")  # ditto
-        self.assertEqual(tp.encode_step("CTRL-U"), b"\x15")
-        self.assertEqual(tp.encode_step("CTRL-W"), b"\x17")
-        self.assertEqual(tp.encode_step("CTRL-Z"), b"\x1a")
-        self.assertEqual(tp.encode_step("ctrl-a"), b"\x01")  # case-insensitive
+        self.assertEqual(keys.encode_step("CTRL-A"), b"\x01")
+        self.assertEqual(keys.encode_step("CTRL-C"), b"\x03")  # old hardcoded value, unchanged
+        self.assertEqual(keys.encode_step("CTRL-D"), b"\x04")  # ditto
+        self.assertEqual(keys.encode_step("CTRL-L"), b"\x0c")
+        self.assertEqual(keys.encode_step("CTRL-R"), b"\x12")  # ditto
+        self.assertEqual(keys.encode_step("CTRL-U"), b"\x15")
+        self.assertEqual(keys.encode_step("CTRL-W"), b"\x17")
+        self.assertEqual(keys.encode_step("CTRL-Z"), b"\x1a")
+        self.assertEqual(keys.encode_step("ctrl-a"), b"\x01")  # case-insensitive
 
     def test_ctrl_non_letter_suffix_is_not_a_key(self):
         # Only A-Z is a recognized CTRL- suffix; anything else falls
         # through to literal text like any other non-matching step.
-        self.assertEqual(tp.encode_step("CTRL-1"), b"CTRL-1")
-        self.assertEqual(tp.encode_step("CTRL-"), b"CTRL-")
-        self.assertEqual(tp.encode_step("CTRL-AB"), b"CTRL-AB")
+        self.assertEqual(keys.encode_step("CTRL-1"), b"CTRL-1")
+        self.assertEqual(keys.encode_step("CTRL-"), b"CTRL-")
+        self.assertEqual(keys.encode_step("CTRL-AB"), b"CTRL-AB")
 
     def test_enter_ret_cr_are_the_same_byte(self):
-        self.assertEqual(tp.encode_step("ENTER"), tp.encode_step("RET"))
-        self.assertEqual(tp.encode_step("RET"), tp.encode_step("CR"))
+        self.assertEqual(keys.encode_step("ENTER"), keys.encode_step("RET"))
+        self.assertEqual(keys.encode_step("RET"), keys.encode_step("CR"))
 
     def test_literal_text_is_utf8_encoded_verbatim(self):
-        self.assertEqual(tp.encode_step("git status"), b"git status")
-        self.assertEqual(tp.encode_step("café"), "café".encode())
+        self.assertEqual(keys.encode_step("git status"), b"git status")
+        self.assertEqual(keys.encode_step("café"), "café".encode())
 
     def test_literal_text_that_merely_resembles_a_key_name_stays_literal(self):
         # Not in SPECIAL_KEYS, so 'tabby' must be sent as-is, not as TAB.
-        self.assertEqual(tp.encode_step("tabby"), b"tabby")
+        self.assertEqual(keys.encode_step("tabby"), b"tabby")
 
     def test_empty_literal(self):
-        self.assertEqual(tp.encode_step(""), b"")
+        self.assertEqual(keys.encode_step(""), b"")
 
 
 class NearMissWarningTests(unittest.TestCase):
@@ -134,7 +125,7 @@ class NearMissWarningTests(unittest.TestCase):
     def _warns(step):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
-            tp.warn_if_near_miss(step)
+            keys.warn_if_near_miss(step)
         return buf.getvalue()
 
     def test_warns_on_missing_hyphen(self):
@@ -157,7 +148,7 @@ class NearMissWarningTests(unittest.TestCase):
     def test_does_not_change_what_gets_sent(self):
         # The whole point: a near-miss still goes out as literal text,
         # unchanged, same as any other non-matching step.
-        self.assertEqual(tp.encode_step("CTRLC"), b"CTRLC")
+        self.assertEqual(keys.encode_step("CTRLC"), b"CTRLC")
 
 
 class LoadStepsTests(unittest.TestCase):
@@ -167,7 +158,7 @@ class LoadStepsTests(unittest.TestCase):
 
     def test_positional_steps_only(self):
         args = self._args(steps=["a", "ENTER"])
-        self.assertEqual(tp.load_steps(args), ["a", "ENTER"])
+        self.assertEqual(cli.load_steps(args), ["a", "ENTER"])
 
     def test_steps_file_only(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
@@ -175,7 +166,7 @@ class LoadStepsTests(unittest.TestCase):
             path = f.name
         try:
             args = self._args(steps_file=path)
-            self.assertEqual(tp.load_steps(args), ["first", "ENTER"])
+            self.assertEqual(cli.load_steps(args), ["first", "ENTER"])
         finally:
             os.unlink(path)
 
@@ -185,7 +176,7 @@ class LoadStepsTests(unittest.TestCase):
             path = f.name
         try:
             args = self._args(steps=["from-cli"], steps_file=path)
-            self.assertEqual(tp.load_steps(args), ["from-cli", "from-file"])
+            self.assertEqual(cli.load_steps(args), ["from-cli", "from-file"])
         finally:
             os.unlink(path)
 
@@ -195,7 +186,7 @@ class LoadStepsTests(unittest.TestCase):
             path = f.name
         try:
             args = self._args(steps_file=path)
-            self.assertEqual(tp.load_steps(args), ["real-step"])
+            self.assertEqual(cli.load_steps(args), ["real-step"])
         finally:
             os.unlink(path)
 
@@ -208,40 +199,40 @@ class LoadStepsTests(unittest.TestCase):
             path = f.name
         try:
             args = self._args(steps_file=path)
-            self.assertEqual(tp.load_steps(args), ["padded"])
+            self.assertEqual(cli.load_steps(args), ["padded"])
         finally:
             os.unlink(path)
 
 
 class AnsiRegexTests(unittest.TestCase):
     def test_strips_csi_sgr_color_codes(self):
-        self.assertEqual(tp.ANSI.sub(b"", b"\x1b[31mred\x1b[0m"), b"red")
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b[31mred\x1b[0m"), b"red")
 
     def test_strips_csi_with_private_marker(self):
         # e.g. cursor-visibility toggles: \x1b[?25l / \x1b[?25h
-        self.assertEqual(tp.ANSI.sub(b"", b"\x1b[?25lhidden\x1b[?25h"), b"hidden")
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b[?25lhidden\x1b[?25h"), b"hidden")
 
     def test_strips_osc_sequence_terminated_by_bel(self):
-        self.assertEqual(tp.ANSI.sub(b"", b"\x1b]0;window title\x07rest"), b"rest")
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b]0;window title\x07rest"), b"rest")
 
     def test_strips_charset_selection(self):
-        self.assertEqual(tp.ANSI.sub(b"", b"\x1b(Btext\x1b)0"), b"text")
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b(Btext\x1b)0"), b"text")
 
     def test_strips_known_single_char_escapes(self):
         for ch in b"=>78McD":
             seq = b"\x1b" + bytes([ch])
             with self.subTest(seq=seq):
-                self.assertEqual(tp.ANSI.sub(b"", seq + b"x"), b"x")
+                self.assertEqual(ansi.ANSI.sub(b"", seq + b"x"), b"x")
 
     def test_leaves_plain_text_untouched(self):
-        self.assertEqual(tp.ANSI.sub(b"", b"hello world"), b"hello world")
+        self.assertEqual(ansi.ANSI.sub(b"", b"hello world"), b"hello world")
 
     def test_does_not_strip_a_bare_control_byte(self):
         # NOTES.md's SOH gotcha: a control byte that isn't part of a
         # recognized ANSI sequence is not "ANSI noise" and must survive
         # stripping -- --raw not helping with this is the whole point of
         # that note.
-        self.assertEqual(tp.ANSI.sub(b"", b"IFS='\x01'"), b"IFS='\x01'")
+        self.assertEqual(ansi.ANSI.sub(b"", b"IFS='\x01'"), b"IFS='\x01'")
 
 
 class ArgparseValidationTests(unittest.TestCase):
