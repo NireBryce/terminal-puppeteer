@@ -13,6 +13,18 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Fixed #4: a race, not just a flaky raw-flag test
+
+- Both `test_ansi_stripped_by_default` and `test_raw_flag_preserves_ansi`
+  had the same bug, not just the one #4 was filed against: a bare
+  `printf ...` target exits (closing its end of the pty) right around
+  when the trailing `x` step lands, so the step is intermittently dropped
+  regardless of `--raw`. 15 back-to-back full-suite runs and 10 more
+  targeted at just these two, all clean, after changing the target
+  command to `bash -c "printf ...; cat"` — `cat` keeps the process alive
+  to reliably receive and echo the step once `printf`'s output has
+  already flushed. Closes #4.
+
 ## 2026-08-24 — Dropped master/slave for controller/target
 
 - `pty.openpty()`'s own return values are named `master`/`slave`
