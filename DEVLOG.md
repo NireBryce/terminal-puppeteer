@@ -13,6 +13,28 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Nix flake + default.nix compat shim (#32)
+
+- Asked "which is best, pros/cons" (flake vs. plain `default.nix`)
+  first; laid out the tradeoff (flake matches this tool's own history
+  and most current Nix users' actual workflow, `default.nix` needs no
+  experimental features) and recommended both -- flake as the real
+  definition, a `flake-compat` shim alongside for non-flake users, a
+  few extra lines instead of picking one audience over the other.
+  Confirmed, implemented.
+- `flake.nix`: `packages`/`apps`/`devShells`, four standard systems.
+  `package.nix`: `buildPythonApplication` against the existing
+  `pyproject.toml` unchanged -- `[project.scripts]` and the man page's
+  `data-files` entry both just work through Nix's normal wheel build,
+  nothing extra needed. Version read from `pyproject.toml` directly
+  rather than duplicated a third time.
+- Verified for real: `nix build`, `nix run -- --version`, `nix
+  develop`, and `nix-build default.nix` (the compat path) all actually
+  run, including the real test suite inside the sandboxed build (one
+  test skips cleanly -- no `pgrep` in the sandbox, exactly what its
+  existing `skipUnless` guard is for) and the built binary + installed
+  man page run afterward. `nix flake check` clean.
+
 ## 2026-08-24 — [project.scripts] replaces script-files (#30)
 
 - Follow-up question after the modularization/naming-collision episode:
