@@ -7,32 +7,27 @@ requires-python = ">=3.9"
 license = "MIT"
 dependencies = []
 
+[project.scripts]
+terminal-puppeteer = "terminal_puppeteer.cli:main"
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-# terminal-puppeteer.py is a thin wrapper (see its own docstring) around
-# the real implementation in terminal_puppeteer/ -- both need installing.
-#
-# The wrapper's hyphenated name is deliberate, not leftover: it was
-# briefly renamed to terminal_puppeteer.py (matching the package) and
-# that broke a real, verified case. `script-files` installs the wrapper
-# alone into <venv>/bin/, separately from the package (which `packages`
-# installs into site-packages) -- a script's own directory is always
-# first on sys.path, so a wrapper named identically to the package it
-# imports shadows the real package with itself (a lone, non-package
-# module) before Python ever reaches site-packages, raising
-# "ModuleNotFoundError: ... 'terminal_puppeteer' is not a package". A
-# plain checkout never hits this (the sibling terminal_puppeteer/
-# directory sitting right next to the wrapper wins over the wrapper
-# itself), which is exactly why it wasn't caught until actually
-# installing the built wheel into a scratch venv and running it for
-# real, not just running it in place. Keeping the wrapper's name
-# different from the package's makes the collision impossible instead
-# of avoided by directory-layout luck.
+# terminal-puppeteer.py at the repo root (a thin wrapper) is for running
+# straight from a checkout, no install needed -- the one thing no
+# packaging mechanism replaces. [project.scripts] above is the separate,
+# idiomatic story for `pip install`: setuptools generates a proper
+# `terminal-puppeteer` command (no .py) at install time, with a correct
+# shebang and a direct reference to terminal_puppeteer.cli:main -- not a
+# copy of a source file, so no `script-files` is needed anymore. The two
+# names being different (with vs. without .py) is deliberate: naming the
+# root wrapper identically to the package it imports was tried and
+# reverted after it broke every installed invocation -- see CLAUDE.md's
+# "terminal-puppeteer.py's hyphenated name is deliberate" entry for the
+# fuller account of why.
 [tool.setuptools]
 packages = ["terminal_puppeteer"]
-script-files = ["terminal-puppeteer.py"]
 
 [tool.setuptools.data-files]
 "share/man/man1" = ["man/terminal-puppeteer.1"]

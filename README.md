@@ -19,6 +19,11 @@ concern (`keys.py`, `ansi.py`, `driver.py`, `cli.py`) once it outgrew one
 file. Grab the whole directory, not just the script, if copying this
 elsewhere — the wrapper needs its sibling package to run.
 
+`pip install .` (or from a released version) gives a `terminal-puppeteer`
+command instead — no `.py`, a proper generated entry point rather than a
+copy of the script. Same tool either way; which name applies depends on
+whether it's installed.
+
 ## Provenance
 
 Written and maintained largely by Claude Code agents; the human behind
