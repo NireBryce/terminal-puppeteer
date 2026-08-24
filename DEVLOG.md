@@ -13,6 +13,28 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — 0.2.0: 8 CLI improvements from a review, all landed together (#24)
+
+- Asked for a CLI-improvements review; got 8 suggestions, then asked to
+  implement all of them. Landed as one PR since each is small and
+  independent: arrow/nav keys (UP/DOWN/LEFT/RIGHT/HOME/END/DELETE/
+  PGUP/PGDN — the biggest real gap, verified against actual readline
+  history recall + CTRL-U line-kill under `bash --norc -i`);
+  `CTRL-<letter>` generalized from 3 hardcoded entries to any A-Z;
+  a `difflib`-based stderr warning for a step that's close to a key
+  name but doesn't match (advisory only, tuned against common literal
+  steps to avoid false positives); `--env KEY=VALUE` (merged onto
+  inherited env, fixes the real TERM=dumb race NOTES.md already
+  documented — NOTES.md updated to point at it); `--list-keys` (needed
+  relaxing the `--ssh`/`--cmd` group to non-required, verified mutual
+  exclusion still held); `--steps-file -` for stdin; `--version`;
+  `--verbose`/`-v`.
+- First version bump: 0.1.0 → 0.2.0 (script, pyproject.toml, man
+  page's `.TH` line) — a real feature release, not a patch.
+- README, man page, and the module docstring all updated to match; man
+  page re-rendered and `--warnings`-checked after every section
+  touched. 20 new tests (36 → 56).
+
 ## 2026-08-24 — Fixed #21: same #10 bug class, a different call site
 
 - The previous entry's "noticed but not filed" item got filed and fixed
