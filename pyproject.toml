@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Let an LLM agent drive a real interactive program through a pty"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT"
 dependencies = []
 
 [build-system]
