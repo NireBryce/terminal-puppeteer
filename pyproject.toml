@@ -5,3 +5,16 @@ description = "Let an LLM agent drive a real interactive program through a pty"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# terminal-puppeteer.py is meant to be run directly (see README's Quick
+# start), not imported -- its hyphenated filename isn't a valid Python
+# module name anyway. `script-files` installs it as-is onto PATH rather
+# than trying to package it as an importable module; without this,
+# `pip install .` previously produced a wheel with no code in it at all
+# (see issue #9).
+[tool.setuptools]
+script-files = ["terminal-puppeteer.py"]
