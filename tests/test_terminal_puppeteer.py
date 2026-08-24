@@ -17,12 +17,15 @@ Deliberately stdlib-only (`unittest`), matching the project itself.
 """
 import importlib.util
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import types
 import unittest
+import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -259,6 +262,64 @@ class CliIntegrationTests(unittest.TestCase):
         elapsed = time.time() - t0
         self.assertEqual(result.returncode, 0)
         self.assertLess(elapsed, 15)
+
+    @unittest.skipUnless(shutil.which("pgrep"), "pgrep not available")
+    def test_target_process_is_terminated_if_the_tool_itself_is_interrupted(self):
+        # Issue #8: run()'s terminate/wait/kill only ran after the drain
+        # loop returned normally, so a Ctrl+C on the tool mid-wait skipped
+        # cleanup entirely and orphaned the target. Use a marker in the
+        # target's own command line so pgrep can find it unambiguously,
+        # interrupt the tool while it's still draining, and confirm the
+        # marked process is gone shortly after -- not still running.
+        #
+        # A compound command (`while :; ...`), not a bare `sleep N`: bash
+        # exec-replaces itself for a single trailing simple command, which
+        # would swap the marker out of the process's own argv/cmdline and
+        # make pgrep blind to it regardless of whether the fix works.
+        marker = f"tp-interrupt-test-{uuid.uuid4().hex}"
+        proc = subprocess.Popen(
+            [sys.executable, str(SCRIPT_PATH), "--cmd",
+             f"bash -c 'echo {marker}; while :; do sleep 1; done'",
+             "--connect-wait", "3", "--step-delay", "3", "--settle", "3",
+             "x"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            # Give it time to actually spawn the target and start draining.
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                found = subprocess.run(
+                    ["pgrep", "-f", marker], stdout=subprocess.PIPE
+                ).stdout
+                if found:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(found, "target process never showed up")
+
+            # Interrupting the instant the target's own startup is visible
+            # to pgrep lands in a narrow, flaky window right at process
+            # spawn (empirically: <0.2s after the target first shows up,
+            # the tool can still exit cleanly even unfixed, apparently
+            # before its own signal handling is fully wired up) that isn't
+            # representative of the real scenario -- a human hitting Ctrl+C
+            # while the tool is settled into one of its multi-second waits.
+            # Land solidly past that window instead.
+            time.sleep(0.5)
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=10)
+
+            time.sleep(0.5)  # let terminate()/wait() in the finally block land
+            still_alive = subprocess.run(
+                ["pgrep", "-f", marker], stdout=subprocess.PIPE
+            ).stdout
+            self.assertFalse(
+                still_alive, "target process survived the tool being interrupted"
+            )
+        finally:
+            subprocess.run(["pkill", "-9", "-f", marker], stderr=subprocess.DEVNULL)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
 
 class CliTimingTests(unittest.TestCase):

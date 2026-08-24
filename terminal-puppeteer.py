@@ -139,17 +139,23 @@ def run(argv, steps, step_delay, settle, connect_wait):
         argv, stdin=target, stdout=target, stderr=target, close_fds=True,
     )
     os.close(target)
-    out = drain(controller, connect_wait)
-    for step in steps:
-        os.write(controller, encode_step(step))
-        out += drain(controller, step_delay)
-    out += drain(controller, settle)
-    proc.terminate()
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    os.close(controller)
+        out = drain(controller, connect_wait)
+        for step in steps:
+            os.write(controller, encode_step(step))
+            out += drain(controller, step_delay)
+        out += drain(controller, settle)
+    finally:
+        # Runs on a clean finish same as on a Ctrl+C/exception mid-drain --
+        # without this, interrupting the tool itself orphans the target
+        # process instead of the "only ever terminates the target" README
+        # promises. See issue #8.
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        os.close(controller)
     return out
 
 
