@@ -110,9 +110,12 @@ def load_steps(args):
 def drain(master, seconds, chunk=65536):
     out = b''
     end = time.time() + seconds
+    got_data = False
     while time.time() < end:
         r, _, _ = select.select([master], [], [], 0.2)
         if not r:
+            if got_data:
+                break
             continue
         try:
             data = os.read(master, chunk)
@@ -121,6 +124,7 @@ def drain(master, seconds, chunk=65536):
         if not data:
             break
         out += data
+        got_data = True
     return out
 
 
