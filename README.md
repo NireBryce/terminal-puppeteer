@@ -14,6 +14,14 @@ stand-in.
 
 Stdlib only (`pty`, `subprocess`, `select`), no dependencies, one file.
 
+## Provenance
+
+Written and maintained largely by Claude Code agents; the human behind
+this repo is not reading every line before it lands. That's fine for the
+personal debugging use case this exists for, but it means the review
+here is agent-review, not human-review — read the code yourself before
+pointing it at anything sensitive.
+
 ## Quick start
 
 ```sh
@@ -108,6 +116,10 @@ trusting a confusing capture: what a synthetic pty does and doesn't
 emulate, why a byte that looks empty in the output might not be, and how
 this tool's own diagnostic commands can get caught by the very bug being
 investigated.
+
+`DEVLOG.md` — terse, reverse-chronological record of what changed in
+this project and why, for picking the work back up without re-reading
+the whole git log.
 
 ## History
 
