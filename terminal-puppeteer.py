@@ -174,9 +174,18 @@ def main():
     if args.cmd and args.ssh_args:
         p.error('--ssh-arg only applies to --ssh')
 
-    argv = ['ssh', '-tt', *args.ssh_args, args.ssh] if args.ssh else shlex.split(args.cmd)
+    if args.ssh:
+        argv = ['ssh', '-tt', *args.ssh_args, args.ssh]
+    else:
+        try:
+            argv = shlex.split(args.cmd)
+        except ValueError as e:
+            p.error(f'--cmd: {e}')
 
-    steps = load_steps(args)
+    try:
+        steps = load_steps(args)
+    except OSError as e:
+        p.error(f'--steps-file: {e.strerror} ({e.filename})')
     if not steps:
         p.error('no steps given (positionally or via --steps-file)')
 
