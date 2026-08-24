@@ -13,6 +13,18 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Fixed #21: same #10 bug class, a different call site
+
+- The previous entry's "noticed but not filed" item got filed and fixed
+  same session: `subprocess.Popen` in `run()` was unguarded, so a
+  `--cmd` (or `ssh` itself) that can't be started raised a raw
+  `FileNotFoundError` traceback instead of a clean message. `run()` now
+  closes both pty fds itself on that failure and re-raises; `main()`
+  reports it via `p.exit(1, ...)` — exit 1, no usage block, since this
+  is a runtime failure rather than a usage mistake. Man page's EXIT
+  STATUS updated to match (it had documented the traceback as expected
+  behavior). #22.
+
 ## 2026-08-24 — Man page, and a couple of usage-text/packaging warts along the way (#19)
 
 - Added `man/terminal-puppeteer.1`, content drawn from README.md/
