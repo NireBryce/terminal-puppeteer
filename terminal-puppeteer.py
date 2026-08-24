@@ -107,18 +107,18 @@ def load_steps(args):
     return steps
 
 
-def drain(master, seconds, chunk=65536):
+def drain(controller, seconds, chunk=65536):
     out = b''
     end = time.time() + seconds
     got_data = False
     while time.time() < end:
-        r, _, _ = select.select([master], [], [], 0.2)
+        r, _, _ = select.select([controller], [], [], 0.2)
         if not r:
             if got_data:
                 break
             continue
         try:
-            data = os.read(master, chunk)
+            data = os.read(controller, chunk)
         except OSError:
             break
         if not data:
@@ -129,22 +129,27 @@ def drain(master, seconds, chunk=65536):
 
 
 def run(argv, steps, step_delay, settle, connect_wait):
-    master, slave = pty.openpty()
+    # pty.openpty() calls these master/slave (matching the underlying POSIX
+    # API and Python's own pty module docs) -- renamed here to the terms
+    # this project already uses everywhere else: `controller` is our end,
+    # `target` is the spawned program's end, same as README.md/NOTES.md's
+    # own vocabulary for "the thing being driven".
+    controller, target = pty.openpty()
     proc = subprocess.Popen(
-        argv, stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+        argv, stdin=target, stdout=target, stderr=target, close_fds=True,
     )
-    os.close(slave)
-    out = drain(master, connect_wait)
+    os.close(target)
+    out = drain(controller, connect_wait)
     for step in steps:
-        os.write(master, encode_step(step))
-        out += drain(master, step_delay)
-    out += drain(master, settle)
+        os.write(controller, encode_step(step))
+        out += drain(controller, step_delay)
+    out += drain(controller, settle)
     proc.terminate()
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-    os.close(master)
+    os.close(controller)
     return out
 
 
