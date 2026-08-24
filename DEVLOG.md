@@ -13,6 +13,17 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Dropped master/slave for controller/target
+
+- `pty.openpty()`'s own return values are named `master`/`slave`
+  (matching the POSIX API and Python's own docs), but that's not load-
+  bearing outside `run()`/`drain()` — renamed the local variables to
+  `controller`/`target`, the terms `README.md`/`NOTES.md` already used
+  everywhere for the same two sides. No public interface changed.
+- Incidentally reconfirmed issue #4 is a genuine race rather than a
+  deterministic failure while re-running the suite after the rename: 3
+  back-to-back runs of `test_raw_flag_preserves_ansi` gave fail/fail/pass.
+
 ## 2026-08-24 — CLAUDE.md and agent-facing skills, ported from nixos-configs
 
 - Added `CLAUDE.md` and four skills (`ship`, `propose-issue`,
