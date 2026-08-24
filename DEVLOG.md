@@ -13,6 +13,21 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — CONTRIBUTORS.md + STYLEGUIDE.md: LLM agents explicitly invited (#26)
+
+- Asked to write `CONTRIBUTORS.md` inviting issues/PRs from LLM agents
+  (not just humans, and not merely tolerating them) as long as
+  well-written and human-readable, plus a style guide for what that
+  means concretely.
+- Split into two files rather than one, on request: `CONTRIBUTORS.md`
+  answers "can I contribute and how" (who's welcome, filing an issue,
+  opening a PR); `STYLEGUIDE.md` answers "what does well-written mean
+  here" (10 rules, grounded in this repo's own demonstrated practice —
+  cites #1/#4/#8/#9/#21 as the "verify, don't assume" precedent rather
+  than reading as generic AI-PR advice).
+- README.md: new Contributing section right after Provenance, both
+  files linked from See also.
+
 ## 2026-08-24 — 0.2.0: 8 CLI improvements from a review, all landed together (#24)
 
 - Asked for a CLI-improvements review; got 8 suggestions, then asked to
