@@ -13,6 +13,30 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Man page, and a couple of usage-text/packaging warts along the way (#19)
+
+- Added `man/terminal-puppeteer.1`, content drawn from README.md/
+  NOTES.md/the module docstring rather than written fresh. Wired into
+  `[tool.setuptools.data-files]` so it installs to `share/man/man1/`.
+- Verified by actually rendering it (`man --warnings -l`), not just
+  writing troff: found `\(em` renders as a *doubled* em-dash under this
+  system's mandoc (switched to the plain `--` the docstring already
+  uses) and `.B` on "-h, --help" adds a stray space around the comma
+  (needed `.BR`).
+- Verifying the wheel surfaced an unrelated setuptools issue: with no
+  explicit `packages` list, auto-discovery treated `man/` as an implicit
+  package and copied it into the wheel root too, on top of the intended
+  data-files copy. `packages = []` fixes it. Verified end-to-end with a
+  real install into a scratch venv (script + man page both land where
+  expected, installed page renders clean).
+- Separately: `--help` printed its own opening sentence twice
+  (`description=` and `epilog=__doc__`'s first paragraph were the same
+  text) — trimmed, with a regression test.
+- Noticed but not filed: `--cmd` naming a genuinely nonexistent command
+  exits 1 with a raw `FileNotFoundError` traceback from `Popen` — same
+  class of bug as #10, different call site. Documented honestly as
+  exit status 1 in the new man page rather than fixed.
+
 ## 2026-08-24 — Full-repo review: 5 issues filed, fixed, and closed same session
 
 - Requested review of the whole repo (script, tests, all four docs,
