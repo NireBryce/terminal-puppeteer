@@ -15,7 +15,9 @@ Two layers:
 
 Deliberately stdlib-only (`unittest`), matching the project itself.
 """
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import signal
@@ -76,6 +78,38 @@ class EncodeStepTests(unittest.TestCase):
         self.assertEqual(tp.encode_step("ctrl-c"), b"\x03")
         self.assertEqual(tp.encode_step("Ctrl-d"), b"\x04")
 
+    def test_arrow_and_navigation_keys(self):
+        self.assertEqual(tp.encode_step("UP"), b"\x1b[A")
+        self.assertEqual(tp.encode_step("DOWN"), b"\x1b[B")
+        self.assertEqual(tp.encode_step("RIGHT"), b"\x1b[C")
+        self.assertEqual(tp.encode_step("LEFT"), b"\x1b[D")
+        self.assertEqual(tp.encode_step("HOME"), b"\x1b[H")
+        self.assertEqual(tp.encode_step("END"), b"\x1b[F")
+        self.assertEqual(tp.encode_step("DELETE"), b"\x1b[3~")
+        self.assertEqual(tp.encode_step("PGUP"), b"\x1b[5~")
+        self.assertEqual(tp.encode_step("PGDN"), b"\x1b[6~")
+        self.assertEqual(tp.encode_step("down"), b"\x1b[B")  # case-insensitive too
+
+    def test_ctrl_letter_is_general_not_just_cdr(self):
+        # Used to be three hardcoded entries (C, D, R); now any A-Z via the
+        # standard ord(letter) - 64 terminal control-code formula.
+        self.assertEqual(tp.encode_step("CTRL-A"), b"\x01")
+        self.assertEqual(tp.encode_step("CTRL-C"), b"\x03")  # old hardcoded value, unchanged
+        self.assertEqual(tp.encode_step("CTRL-D"), b"\x04")  # ditto
+        self.assertEqual(tp.encode_step("CTRL-L"), b"\x0c")
+        self.assertEqual(tp.encode_step("CTRL-R"), b"\x12")  # ditto
+        self.assertEqual(tp.encode_step("CTRL-U"), b"\x15")
+        self.assertEqual(tp.encode_step("CTRL-W"), b"\x17")
+        self.assertEqual(tp.encode_step("CTRL-Z"), b"\x1a")
+        self.assertEqual(tp.encode_step("ctrl-a"), b"\x01")  # case-insensitive
+
+    def test_ctrl_non_letter_suffix_is_not_a_key(self):
+        # Only A-Z is a recognized CTRL- suffix; anything else falls
+        # through to literal text like any other non-matching step.
+        self.assertEqual(tp.encode_step("CTRL-1"), b"CTRL-1")
+        self.assertEqual(tp.encode_step("CTRL-"), b"CTRL-")
+        self.assertEqual(tp.encode_step("CTRL-AB"), b"CTRL-AB")
+
     def test_enter_ret_cr_are_the_same_byte(self):
         self.assertEqual(tp.encode_step("ENTER"), tp.encode_step("RET"))
         self.assertEqual(tp.encode_step("RET"), tp.encode_step("CR"))
@@ -90,6 +124,40 @@ class EncodeStepTests(unittest.TestCase):
 
     def test_empty_literal(self):
         self.assertEqual(tp.encode_step(""), b"")
+
+
+class NearMissWarningTests(unittest.TestCase):
+    """warn_if_near_miss is advisory only -- it never changes what
+    encode_step would send, only whether a heads-up lands on stderr."""
+
+    @staticmethod
+    def _warns(step):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            tp.warn_if_near_miss(step)
+        return buf.getvalue()
+
+    def test_warns_on_missing_hyphen(self):
+        self.assertIn("CTRL-C", self._warns("CTRLC"))
+
+    def test_warns_on_close_typo(self):
+        self.assertIn("ENTER", self._warns("ENTR"))
+
+    def test_does_not_warn_on_an_exact_key_match(self):
+        # Already handled correctly by encode_step -- nothing to warn about.
+        self.assertEqual(self._warns("ENTER"), "")
+        self.assertEqual(self._warns("ctrl-c"), "")
+        self.assertEqual(self._warns("CTRL-Q"), "")  # general form, any letter
+
+    def test_does_not_warn_on_ordinary_literal_text(self):
+        for step in ("git status", "ls", "pwd", "echo hi", "yes", "exit"):
+            with self.subTest(step=step):
+                self.assertEqual(self._warns(step), "")
+
+    def test_does_not_change_what_gets_sent(self):
+        # The whole point: a near-miss still goes out as literal text,
+        # unchanged, same as any other non-matching step.
+        self.assertEqual(tp.encode_step("CTRLC"), b"CTRLC")
 
 
 class LoadStepsTests(unittest.TestCase):
@@ -238,6 +306,40 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertNotIn(b"Traceback", result.stderr)
         self.assertNotIn(b"usage:", result.stderr)
 
+    def test_env_without_equals_sign_is_a_clean_error(self):
+        result = run_cli(["--cmd", "cat", "--env", "NOEQUALSSIGN", "x"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--env:", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+
+class VersionAndListKeysTests(unittest.TestCase):
+    def test_version_prints_and_exits_zero(self):
+        result = run_cli(["--version"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"terminal-puppeteer.py", result.stdout)
+        self.assertRegex(result.stdout, rb"\d+\.\d+\.\d+")
+
+    def test_list_keys_does_not_require_a_target(self):
+        # --list-keys alone, no --ssh/--cmd and no steps -- would normally
+        # be two separate usage errors, but this bypasses both.
+        result = run_cli(["--list-keys"])
+        self.assertEqual(result.returncode, 0)
+
+    def test_list_keys_lists_the_actual_keys(self):
+        result = run_cli(["--list-keys"])
+        for name in ("TAB", "ENTER", "UP", "DOWN", "DELETE", "CTRL"):
+            with self.subTest(name=name):
+                self.assertIn(name.encode(), result.stdout)
+
+    def test_ssh_and_cmd_still_mutually_exclusive_after_group_made_optional(self):
+        # Making the --ssh/--cmd group non-required (so --list-keys can
+        # skip it) must not have also relaxed "at most one of the two" --
+        # that half of a mutually exclusive group's enforcement doesn't
+        # depend on required=True/False.
+        result = run_cli(["--ssh", "host", "--cmd", "cat", "x"])
+        self.assertEqual(result.returncode, 2)
+
 
 class CliIntegrationTests(unittest.TestCase):
     """End-to-end runs against a local `cat` (or similar) under a real pty."""
@@ -362,6 +464,49 @@ class CliIntegrationTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_env_sets_a_variable_in_the_target_process(self):
+        result = run_cli(["--cmd", "env", *FAST, "--env", "TP_TEST_VAR=hello", "x"])
+        self.assertIn(b"TP_TEST_VAR=hello", result.stdout)
+
+    def test_env_merges_with_inherited_environment_rather_than_replacing_it(self):
+        # subprocess.Popen's env= REPLACES the whole environment if given
+        # at all -- run() has to merge onto os.environ itself, or the
+        # target loses PATH and everything else the moment --env is used.
+        result = run_cli(["--cmd", "env", *FAST, "--env", "TP_TEST_VAR=hello", "x"])
+        self.assertIn(b"PATH=", result.stdout)
+
+    def test_env_repeatable_for_multiple_variables(self):
+        result = run_cli(
+            ["--cmd", "env", *FAST, "--env", "TP_A=1", "--env", "TP_B=2", "x"]
+        )
+        self.assertIn(b"TP_A=1", result.stdout)
+        self.assertIn(b"TP_B=2", result.stdout)
+
+    def test_no_env_flag_leaves_environment_untouched(self):
+        # Default (env=None passed to Popen) must behave exactly like
+        # before --env existed -- full, unmodified inherited environment.
+        result = run_cli(["--cmd", "env", *FAST, "x"])
+        self.assertIn(b"PATH=", result.stdout)
+
+    def test_verbose_echoes_each_step_to_stderr_in_order(self):
+        result = run_cli(["--cmd", "cat", *FAST, "-v", "hi", "ENTER"])
+        self.assertEqual(result.returncode, 0)
+        lines = [l for l in result.stderr.splitlines() if l.startswith(b">>")]
+        self.assertEqual(lines, [b">> hi", b">> ENTER"])
+
+    def test_not_verbose_by_default_prints_nothing_to_stderr(self):
+        result = run_cli(["--cmd", "cat", *FAST, "hi", "ENTER"])
+        self.assertEqual(result.stderr, b"")
+
+    def test_steps_file_dash_reads_from_stdin(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--cmd", "cat", *FAST,
+             "--steps-file", "-"],
+            input=b"hi\nENTER\n",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        )
+        self.assertEqual(result.stdout, b"hi\r\nhi\r\n\n")
 
 
 class CliTimingTests(unittest.TestCase):

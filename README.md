@@ -34,6 +34,9 @@ pointing it at anything sensitive.
 
 # a scripted multi-step repro, read from a file instead of argv
 ./terminal-puppeteer.py --ssh myhost --steps-file repro.txt
+
+# what "TAB", "CTRL-U", etc. actually send, without a trip to the docs
+./terminal-puppeteer.py --list-keys
 ```
 
 Output is everything the pty produced, ANSI escape sequences stripped by
@@ -70,11 +73,26 @@ added newline, or one of a closed set of named keys (case-insensitive):
 | `TAB` | `\t` |
 | `ENTER`, `RET`, `CR` | `\r` |
 | `NEWLINE` | `\n` |
-| `CTRL-C` | `\x03` |
-| `CTRL-D` | `\x04` |
-| `CTRL-R` | `\x12` |
 | `ESC` | `\x1b` |
 | `BACKSPACE` | `\x7f` |
+| `UP`, `DOWN`, `LEFT`, `RIGHT` | `\x1b[A` / `\x1b[B` / `\x1b[D` / `\x1b[C` |
+| `HOME`, `END` | `\x1b[H` / `\x1b[F` |
+| `DELETE` | `\x1b[3~` |
+| `PGUP`, `PGDN` | `\x1b[5~` / `\x1b[6~` |
+| `CTRL-`*letter* | any `A`–`Z`, e.g. `CTRL-C` → `\x03` |
+
+`--list-keys` prints this same table (computed from the same table the
+tool itself uses, not transcribed separately) and exits — the exact
+bytes without a trip back to this file. `CTRL-`*letter* isn't a fixed
+list: any letter A–Z works, not just the handful (`CTRL-C`/`CTRL-D`)
+that used to be hardcoded — `CTRL-U`, `CTRL-L`, `CTRL-W`, `CTRL-A` all
+work the same way.
+
+A step that doesn't match any known key is still sent as literal text,
+same as ever — but if it's *close* to one (`CTRLC` missing its hyphen,
+`ENTR` a typo) a warning goes to stderr saying so. It's advisory only:
+the step still goes out literally either way, this just flags the case
+that's more likely a mistake than intended text.
 
 **No step ever gets an implicit trailing newline.** That's what lets a step
 be a bare `TAB` or a partial line someone's about to keep typing — but it
@@ -84,8 +102,21 @@ run. `'git status' ENTER`, not `'git status'` alone.
 
 `--steps-file PATH` appends more steps, one per line, on top of any given
 on the command line — blank lines skipped, `#`-prefixed lines are
-comments. Useful once a repro has more steps than are comfortable as shell
-arguments, or needs to be versioned/reused.
+comments, `PATH` of `-` reads from stdin instead of a file. Useful once a
+repro has more steps than are comfortable as shell arguments, or needs to
+be versioned/reused.
+
+## Environment
+
+`--env KEY=VALUE` (repeatable) sets an extra environment variable for the
+target process, merged onto the inherited environment (not replacing it
+— `PATH` and everything else the target would normally see is still
+there). Most useful for something that has to be true *before* the
+target starts, which a step can't guarantee: `--env TERM=dumb` avoids
+some terminal-capability probing that a program checking `$TERM` might
+otherwise do on startup (see NOTES.md's ble.sh gotcha) — a `'export
+TERM=dumb' ENTER` step sets the same variable, but only after the shell
+is already up and reading input, racing whatever probe happens first.
 
 ## Timing
 
@@ -111,6 +142,13 @@ correct across every target (`exit`+`ENTER` for a shell, `CTRL-D` for a
 REPL, a whole different key for `tmux`), so this doesn't guess. Include
 whatever quit step actually applies to your target as the last entry in
 your own step list if a clean logout matters for what you're checking.
+
+## Other flags
+
+`--verbose`/`-v` prints each step to stderr as it's sent (`>> TAB`), for
+watching a long or slow multi-step run happen live instead of waiting
+for the whole transcript to print at the end — output on stdout is
+unaffected either way. `--version` prints the version and exits.
 
 ## See also
 

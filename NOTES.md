@@ -29,9 +29,13 @@ otherwise use to render more precisely. If a target hangs waiting
 indefinitely on one of these instead of timing out and continuing, that's
 a real limitation of this approach — there's no cheap general fix short of
 implementing a real terminal-query responder, which is more machinery than
-most repros need. Setting `TERM=dumb` (or another minimal value) as an
-early step, before the target starts probing, avoids some of this for
-programs that check `$TERM` before deciding whether to probe at all.
+most repros need. Setting `TERM=dumb` (or another minimal value) avoids
+some of this for programs that check `$TERM` before deciding whether to
+probe at all -- `--env TERM=dumb` is the race-free way to do it (in the
+target's environment from the moment it starts, before it's read a
+single byte), preferred over setting it as an early step (`'export
+TERM=dumb' ENTER`), which still races whatever probing happens before
+that step lands.
 
 ## A byte that looks empty in the output might not be
 
