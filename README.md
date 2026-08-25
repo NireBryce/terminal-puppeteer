@@ -5,6 +5,15 @@ sending actual keystrokes with delays between them, and reading back what
 the program actually did — instead of the one-shot, no-tty view a normal
 tool call gets.
 
+What comes back is a flat, in-order byte stream — everything the pty
+produced, ANSI stripped by default — not a rendered screen with a cursor
+position. That's the right shape for a line-oriented shell/REPL session,
+which is what this tool targets; it's the wrong shape for a full-screen
+program like `vim` or a debugger, where you actually want the current
+screen contents. Most similar tools (see Alternatives, below) take that
+screen-reading approach instead — reach for one of those if that's what
+you're driving.
+
 Built for reproducing bugs that only exist in a live, human-typed terminal
 session: `$-` not containing `i` because no pty was allocated, a
 completion/suggestion race that only fires while keys are still landing, a
@@ -205,12 +214,59 @@ the whole git log.
 `STYLEGUIDE.md` — a style guide for LLM-originating submissions
 specifically.
 
+"Alternatives" below — other tools doing the same kind of pty-driving,
+most of them more mature than this one.
+
 `flake.nix`/`package.nix`/`default.nix` — the Nix packaging behind the
 "Nix:" line above. `flake.nix` is the real definition (outputs:
 `packages`, `apps` for `nix run`, `devShells`); `package.nix` is the
 actual derivation, factored out so `default.nix`'s `flake-compat` shim
 can build the same thing for `nix-build` without flakes, without
 duplicating the package definition itself.
+
+## Alternatives
+
+This is a personal debugging tool, extracted the same day it's dated
+below — not the first or most mature entry in this space. Several other
+tools take the same "wrap the target in a real pty, let an agent send
+keys and read output" approach, and most of them are older, more
+established, and more actively maintained:
+
+- [tui-use](https://github.com/onesuper/tui-use) (257★) — closest in
+  spirit to this tool: spawn a program in a pty, read the screen as
+  plain text, send keystrokes from the command line.
+- [clsh](https://github.com/my-claude-utils/clsh) (523★) — real pty
+  (zsh/bash/vim/tmux, full colors) reachable from any device; more
+  aimed at remote terminal access than one-shot bug repro, but built on
+  the same idea.
+- [agent-tui](https://github.com/pproenca/agent-tui) (113★) —
+  screenshot-based TUI automation for agents, actively maintained.
+- [interminai](https://github.com/mstsirkin/interminai) (56★) — a pty
+  proxy specifically for full-screen programs (`vim`, `git rebase -i`,
+  `gdb`) via screen capture rather than a flat byte stream.
+- [hty](https://hty.sh/) — a *persistent* pty session an agent reads and
+  types into like a human, rather than this tool's one-shot-and-exit
+  model.
+- [agent-tty](https://github.com/coder/agent-tty) (26★, Coder) —
+  `node-pty`-backed sessions with an append-only event log; built for
+  driving/inspecting/recording sessions, not just single repros.
+
+Two more exist in the same space but are narrower or less established,
+noted honestly rather than folded into the "more mature" list above:
+[agent-terminal](https://github.com/jasonkneen/agent-terminal) (12★, a
+single day of commits back in January) and
+[claude-pty-wrapper](https://github.com/kcosr/claude-pty-wrapper) (31★)
+which wraps interactive Claude itself rather than an arbitrary target,
+so it isn't really solving the same problem as this tool.
+
+The main design difference between this tool and most of the above:
+they read the *rendered screen* (cursor-aware, TUI-style), which is the
+right model for a full-screen program like `vim` or a debugger. This
+tool reads a flat byte stream instead, which fits its actual use case —
+line-oriented shell/REPL sessions — but buys stdlib-only simplicity at
+the cost of screen/cursor fidelity. If your target is genuinely
+full-screen, one of the screen-capture tools above is probably a better
+fit than this one.
 
 ## History
 
