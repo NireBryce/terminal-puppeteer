@@ -13,6 +13,26 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Direct tests for driver.py and print_key_list (#40)
+
+- Asked to "write tests" with no further context; surveyed actual
+  coverage against the package's real surface rather than guessing what
+  was meant. Found a real gap: `driver.drain`/`driver.run` and
+  `keys.print_key_list` were only ever exercised indirectly through
+  full CLI subprocess spawns, never imported and called directly, even
+  though the package split (#28) made that straightforward.
+- `DrainTests`: `drain()` against a real `os.pipe()` fd, not a mock --
+  early exit once quiet, full budget wait when nothing arrives, and the
+  EOF path (write end closed), a genuinely different exit condition
+  than the quiet-timeout one.
+- `RunDirectTests`: `run()` called directly, checking `/proc/self/fd`
+  counts before/after. Formalizes the #21/#8 fd-cleanup fix, which had
+  only ever been verified once, by hand -- confirmed the new test
+  actually catches that regression by reverting the fix locally
+  (failed, leaked exactly 2 fds) and restoring it (passed).
+- `PrintKeyListTests`: the `--list-keys` formatting logic directly.
+- 65 tests now (was 57).
+
 ## 2026-08-24 — Verified shell-agnostic --cmd: zsh, fish, other shells (#38)
 
 - Filed #36 (CI doesn't verify Nix packaging -- known gap called out in
