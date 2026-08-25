@@ -86,6 +86,16 @@ Exactly one of these, always:
   that isn't SSH-reachable in the usual way, that's on the command you
   pass, not something this tool special-cases.
 
+Shell-agnostic by construction — `--cmd` execs whatever `argv` you give
+it under a pty, nothing bash-specific anywhere in this tool. `--cmd 'zsh
+-i'`, `--cmd 'fish'`, `--cmd 'tmux new -A -s work'` all work the same
+way `--cmd 'bash -i'` does. (`zsh -i` verified directly; see NOTES.md's
+live-redraw gotcha for what its captures look like. `fish` couldn't be
+verified from the sandbox this was written in — see
+[issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37) —
+but nothing in this tool is shell-specific, so there's no design reason
+to expect it to behave differently from any other target.)
+
 ## Steps
 
 Everything after the target is a flat list of **steps**, applied in order.

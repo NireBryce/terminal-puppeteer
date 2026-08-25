@@ -83,6 +83,13 @@ Any command, shell-quoted as one string and split with Python's
 \fB\-\-cmd 'bash \-i'\fR,
 \fB\-\-cmd 'tmux attach \-t work'\fR).
 Runs local to wherever \fBterminal-puppeteer.py\fR itself runs.
+Shell-agnostic by construction \-\- nothing bash-specific anywhere in
+this tool, so
+.B \-\-cmd 'zsh \-i'
+works the same way (see
+.B NOTES.md
+for what a live-redraw line editor's own output looks like in a flat
+capture).
 .SH STEPS
 Everything after the target is a flat list of
 .IR STEP s,

@@ -354,6 +354,22 @@ class CliIntegrationTests(unittest.TestCase):
         result = run_cli(["--cmd", "cat", *FAST, "hi", "enter"])
         self.assertEqual(result.stdout, b"hi\r\nhi\r\n\n")
 
+    @unittest.skipUnless(shutil.which("zsh"), "zsh not available")
+    def test_zsh_as_a_target_actually_executes_commands(self):
+        # Shell-agnostic by construction (see README's Targets section) --
+        # verify a shell other than bash actually works end to end, not
+        # just assume it from reading the argv-building code. `-f`: no rc
+        # files, so this doesn't depend on whatever theme/plugins happen
+        # to be configured on the machine running the suite -- verified
+        # directly that the NOTES.md live-redraw gotcha reproduces even
+        # bare like this, not just under a customized config, so `-f`
+        # doesn't dodge what this is meant to confirm still works.
+        result = run_cli(
+            ["--cmd", "zsh -f -i", *FAST, "echo tp-zsh-marker-hello", "ENTER"]
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"tp-zsh-marker-hello", result.stdout)
+
     # `printf ...; cat`, not bare `printf ...`: a bare one-shot printf exits
     # (and closes its end of the pty) as soon as it's done printing, racing
     # the "x" step sent right after it -- issue #4, seen as an intermittent

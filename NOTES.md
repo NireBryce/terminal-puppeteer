@@ -37,6 +37,34 @@ single byte), preferred over setting it as an early step (`'export
 TERM=dumb' ENTER`), which still races whatever probing happens before
 that step lands.
 
+## A fancy line editor's own redraws look like typos in a flat capture
+
+Not specific to bash/ble.sh — any shell with a live, per-keystroke line
+editor does this, and it's worth knowing before assuming a capture shows
+a real typo. Driving `zsh -i` (with zsh's own syntax-highlighting/
+autosuggestion zle widgets active, the common default) and sending the
+step `'echo hi' ENTER`, the captured line reads:
+
+```
+eecho hi
+```
+
+Not a typo in the step, and not this tool double-sending a character.
+`--raw` shows what's actually happening: `e`, then a bare backspace
+(`\x08`), then `echo hi` — zsh's line editor redrew the line after the
+first keystroke (to (re)apply syntax highlighting), the way it would on
+every real terminal, all the time, completely invisibly, because a real
+terminal *processes* backspace as a cursor movement and overwrite. This
+tool doesn't emulate a terminal — it just captures the byte stream as
+text — so a redraw sequence that a human would never consciously notice
+comes out looking like a corrupted duplicate character instead. The
+command itself still ran correctly underneath (`hi` printed on the next
+line); only the flat-text rendering of the *typing itself* is
+misleading. Same root cause as the ble.sh terminal-probing gotcha above
+(no real terminal to make live editor behavior legible), different
+symptom — expect it from any shell/line-editor combo that redraws as
+you type, not just ble.sh under bash.
+
 ## A byte that looks empty in the output might not be
 
 The bug this tool was built to chase turned out to hinge on a single SOH
