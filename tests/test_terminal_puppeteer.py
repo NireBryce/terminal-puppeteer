@@ -1,16 +1,20 @@
 """Tests for terminal_puppeteer.
 
-Two layers:
+Three layers, each importing the real package directly (it's on
+sys.path via REPO_ROOT below), not loaded by path:
 
 - Unit tests for the pure helpers (`keys.encode_step`, `cli.load_steps`,
-  `ansi.ANSI`) that don't need a pty at all -- imported as the real
-  package (it's on sys.path via REPO_ROOT below), not loaded by path.
+  `ansi.ANSI`, `keys.print_key_list`) that don't need a pty at all.
+- Direct tests of `driver.drain`/`driver.run` -- still real fds/a real
+  pty/a real subprocess, just called directly instead of through a
+  spawned CLI process, so they can check things (timing precision, fd
+  counts) the CLI layer below can't reach into as easily.
 - CLI integration tests that actually invoke `terminal-puppeteer.py` (the
   thin wrapper at the repo root) as a subprocess against a local `--cmd`
   target (`cat`, `printf`, `bash`) with short delays, and check the
-  captured stdout byte-for-byte. These exercise the real pty plumbing
-  (`driver.run`, `driver.drain`, argparse validation, process
-  termination) the way an agent actually would.
+  captured stdout byte-for-byte, exercising the whole thing end to end
+  (argparse validation, process termination, real shell targets) the way
+  an agent actually would.
 
 Deliberately stdlib-only (`unittest`), matching the project itself.
 """
@@ -32,7 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "terminal-puppeteer.py"
 
 sys.path.insert(0, str(REPO_ROOT))
-from terminal_puppeteer import ansi, cli, keys  # noqa: E402
+from terminal_puppeteer import ansi, cli, driver, keys  # noqa: E402
 
 # Short delays for CLI integration tests -- long enough for a local `cat`/
 # `printf`/`bash` to respond, short enough that the suite doesn't crawl.
@@ -115,6 +119,38 @@ class EncodeStepTests(unittest.TestCase):
 
     def test_empty_literal(self):
         self.assertEqual(keys.encode_step(""), b"")
+
+
+class PrintKeyListTests(unittest.TestCase):
+    """print_key_list() backs --list-keys (see VersionAndListKeysTests
+    for the CLI-level check); these test its formatting logic directly."""
+
+    @staticmethod
+    def _output():
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            keys.print_key_list()
+        return buf.getvalue()
+
+    def test_groups_enter_ret_cr_into_one_row(self):
+        # SPECIAL_KEYS has three separate entries mapping to the same
+        # byte (b'\r') -- print_key_list groups them into a single row
+        # rather than printing ENTER/RET/CR as three identical lines.
+        out = self._output()
+        self.assertIn("ENTER, RET, CR", out)
+
+    def test_includes_the_general_ctrl_letter_row(self):
+        # Not itself a SPECIAL_KEYS entry -- CTRL-<A-Z> is a separate
+        # line print_key_list adds by hand, the one row not derived
+        # from iterating SPECIAL_KEYS.
+        out = self._output()
+        self.assertIn("CTRL-<A-Z>", out)
+
+    def test_every_special_key_name_appears_somewhere(self):
+        out = self._output()
+        for name in keys.SPECIAL_KEYS:
+            with self.subTest(name=name):
+                self.assertIn(name, out)
 
 
 class NearMissWarningTests(unittest.TestCase):
@@ -330,6 +366,87 @@ class VersionAndListKeysTests(unittest.TestCase):
         # depend on required=True/False.
         result = run_cli(["--ssh", "host", "--cmd", "cat", "x"])
         self.assertEqual(result.returncode, 2)
+
+
+class DrainTests(unittest.TestCase):
+    """Direct tests of driver.drain() against a real os.pipe() fd --
+    faster and more precise than only exercising this indirectly through
+    the full CLI/pty stack (see CliTimingTests for that side), and still
+    a real fd, not a mock."""
+
+    def test_exits_early_once_quiet_after_receiving_data(self):
+        r, w = os.pipe()
+        try:
+            os.write(w, b"hello")
+            t0 = time.time()
+            out = driver.drain(r, 5)  # generous budget
+            elapsed = time.time() - t0
+            self.assertEqual(out, b"hello")
+            self.assertLess(elapsed, 1.0)
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_waits_the_full_budget_if_nothing_ever_arrives(self):
+        r, w = os.pipe()
+        try:
+            t0 = time.time()
+            out = driver.drain(r, 0.5)
+            elapsed = time.time() - t0
+            self.assertEqual(out, b"")
+            self.assertGreaterEqual(elapsed, 0.5)
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_stops_on_eof_once_the_write_end_closes(self):
+        # A different exit path than the quiet-timeout one above: EOF
+        # (os.read returning b'') breaks immediately, full budget or not.
+        r, w = os.pipe()
+        os.write(w, b"bye")
+        os.close(w)
+        try:
+            t0 = time.time()
+            out = driver.drain(r, 5)
+            elapsed = time.time() - t0
+            self.assertEqual(out, b"bye")
+            self.assertLess(elapsed, 1.0)
+        finally:
+            os.close(r)
+
+
+class RunDirectTests(unittest.TestCase):
+    """Direct tests of driver.run() -- real pty, real subprocess, just
+    imported and called directly instead of through the CLI subprocess
+    layer, so these can check things (like fd counts) the CLI-level
+    tests in CliIntegrationTests have no way to reach into."""
+
+    @staticmethod
+    def _open_fd_count():
+        return len(os.listdir("/proc/self/fd"))
+
+    @unittest.skipUnless(os.path.isdir("/proc/self/fd"), "no /proc/self/fd here")
+    def test_no_fd_leak_on_a_normal_run(self):
+        before = self._open_fd_count()
+        driver.run(["cat"], ["hi", "ENTER"], 0.3, 0.3, 0.2)
+        after = self._open_fd_count()
+        self.assertEqual(before, after)
+
+    @unittest.skipUnless(os.path.isdir("/proc/self/fd"), "no /proc/self/fd here")
+    def test_no_fd_leak_when_popen_fails(self):
+        # Issue #21/#8's fix, formalized: run() closes both pty fds
+        # itself on a failed Popen, rather than leaking them. Previously
+        # only verified once by hand (counting /proc/self/fd across 20
+        # separate subprocess invocations, so nothing leaked *within* a
+        # process either way); this checks it directly, in-process,
+        # against the real function.
+        before = self._open_fd_count()
+        with self.assertRaises(OSError):
+            driver.run(
+                ["tp-definitely-not-a-real-command-xyz"], ["x"], 0.1, 0.1, 0.1
+            )
+        after = self._open_fd_count()
+        self.assertEqual(before, after)
 
 
 class CliIntegrationTests(unittest.TestCase):
