@@ -13,6 +13,35 @@ or a commit message instead.
 
 ---
 
+## 2026-08-24 — Verified shell-agnostic --cmd: zsh, fish, other shells (#38)
+
+- Filed #36 (CI doesn't verify Nix packaging -- known gap called out in
+  CLAUDE.md's own conventions, never turned into a tracked issue until
+  asked to). Then worked from a scratch `terminal_puppeteer/todo.md`
+  someone added directly in the editor ("zsh support", "fish support",
+  "other shells") -- addressed each, removed the file afterward in
+  favor of this repo's actual tracking (an issue for the one genuinely
+  open question, this DEVLOG entry for the rest) rather than a second
+  floating TODO queue alongside it.
+- "Other shells" was already true by construction -- nothing
+  shell-specific anywhere in this tool. Documented that explicitly
+  instead of leaving it implicit.
+- zsh verified directly (including with `-f`, no rc files, to rule out
+  personal dotfiles). Found a real gotcha along the way: zsh's line
+  editor redraws the line on the first keystroke -- reproduces bare,
+  no plugins needed -- so a flat capture shows `eecho hi` for a typed
+  `echo hi`. Confirmed with `--raw` it's a literal backspace, not
+  double-sending. New NOTES.md gotcha, same family as the existing
+  ble.sh one, generalized to any live-redraw line editor. Real CLI
+  test added (`skipUnless` zsh available).
+- fish warned on startup and never executed anything sent to it --
+  verified this is NOT a terminal-puppeteer bug by reproducing the
+  identical symptom with a bare `pty.openpty()` script, zero
+  terminal-puppeteer code involved. bash/zsh tolerate the same missing
+  job-control capability in this sandbox and keep working; fish alone
+  treats it as a hard blocker. Filed #37 rather than guessing which
+  way it resolves on a normal machine.
+
 ## 2026-08-24 — Documented the Nix files (#34)
 
 - Asked "is CI no strings attached, or drop it" (answered: keep it,
