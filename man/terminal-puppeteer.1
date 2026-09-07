@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.1" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.2" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -316,7 +316,13 @@ status reports a
 .B WAIT\-FOR:
 step whose pattern never arrived within
 .BR \-\-wait\-for\-timeout :
-the message names the step and the last output seen. Any other
+the message names the step and the last output seen. The same status
+also reports a target that exited or was killed while steps remained
+un-sent \-\- the message names the exit status or signal, how many steps
+were never sent, and which step would have been next, and the partial
+capture still prints to standard output (the capture is the diagnostic;
+the un-sent steps would only have been echoed by the pty to a target
+that is no longer there). Any other
 unexpected error still prints a Python traceback.
 .SH EXAMPLES
 .PP

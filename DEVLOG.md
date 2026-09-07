@@ -13,6 +13,31 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.2: a target that dies with steps un-sent fails loudly
+
+- The last #37 loose thread: the tool used to exit 0 even when the
+  target died at startup — the pty echoes every step regardless, so
+  fish's old refusal looked like a quiet successful run. Now `run()`
+  checks the target before each step, and a death with steps remaining
+  raises `TargetDied`: the CLI still prints the partial capture to
+  stdout (it's the diagnostic — typically the target's dying words,
+  stripped the same as a successful run), and one stderr line names
+  the exit status or signal (decoded, e.g. `killed by signal 9
+  (SIGKILL)`), how many steps were never sent, and which step would
+  have been next. Exit 1, no usage block — the same runtime-failure
+  shape as #46's `WaitForTimeout`.
+- Dying **after** the last step is deliberately not an error: `'exit'
+  ENTER` as the finale is the normal clean-logout shape. Tested both
+  ways, plus the signal-name decoding and the CLI's stdout/stderr/exit
+  shape. 114 tests before this change; +4 here → 118.
+- Docs: README's Exit behavior section and the man page's EXIT STATUS
+  now spell out the new failure mode; NOTES.md's masquerade gotcha
+  rewritten to describe the check (the echo-vs-output distinction
+  stays as advice for reading any capture); cli.py's epilog mentions
+  it. 0.3.1 → 0.3.2 (pyproject, script version, man `.TH`).
+
+---
+
 ## 2026-09-07 — 0.3.1: fish works — controlling terminal + full query answering (#37)
 
 - Picking up #37's "verify on a normal machine" ask, on a real NixOS

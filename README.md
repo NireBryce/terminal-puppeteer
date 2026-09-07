@@ -233,6 +233,18 @@ REPL, a whole different key for `tmux`), so this doesn't guess. Include
 whatever quit step actually applies to your target as the last entry in
 your own step list if a clean logout matters for what you're checking.
 
+If the target exits on its own **while steps remain to be sent** — a
+crash, an unwelcome startup, a typo'd target — the run fails loudly:
+exit 1, the partial capture still on stdout (it's the diagnostic,
+usually the target's dying words), and one stderr line naming the exit
+status or signal, how many steps were never sent, and which step would
+have been next. A target that dies *after* the last step — `exit`+`ENTER`
+as the final step, the clean-logout shape — is not an error. This check
+exists because a dead target used to be invisible: the pty echoes every
+step whether or not anything is reading them, so a target that died at
+startup looked exactly like a quiet, successful run
+([issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37)).
+
 ## Other flags
 
 `--verbose`/`-v` prints each step to stderr as it's sent (`>> TAB`), for

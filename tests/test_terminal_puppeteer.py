@@ -763,6 +763,39 @@ class DriverStepTests(unittest.TestCase):
         )
         self.assertIn(b"done-130", out)
 
+    def test_target_dying_with_steps_remaining_fails_loudly(self):
+        # The #37 masquerade's fix: steps sent to a dead target raise,
+        # with the exit status, the count sent/remaining, and the
+        # partial capture attached (the target's dying words are the
+        # diagnostic).
+        with self.assertRaises(driver.TargetDied) as cm:
+            driver.run(
+                ["bash", "-c", "echo pre-death; exit 5"],
+                ["a", "ENTER", "b", "ENTER"],
+                0.3, 0.2, 0.3,
+            )
+        self.assertIn(b"pre-death", cm.exception.output)
+        self.assertIn("status 5", str(cm.exception))
+        self.assertIn("after 0 of 4 steps", str(cm.exception))
+        self.assertIn("next would be 'a'", str(cm.exception))
+
+    def test_target_killed_by_a_signal_names_the_signal(self):
+        with self.assertRaises(driver.TargetDied) as cm:
+            driver.run(["bash", "-c", "kill -9 $$"], ["x"], 0.3, 0.2, 0.3)
+        self.assertIn("SIGKILL", str(cm.exception))
+
+    def test_target_dying_after_the_last_step_is_not_an_error(self):
+        # The clean-logout shape: the death happens after the final
+        # step, so there is nothing left to send into the void -- this
+        # is the normal way a repro ends (exit/CTRL-D as the last step)
+        # and must stay exit-0.
+        out = driver.run(
+            ["bash", "-c", "read line; echo got-$line"],
+            ["hi", "ENTER"],
+            0.5, 0.5, 0.3,
+        )
+        self.assertIn(b"got-hi", out)
+
 
 @unittest.skipUnless(shutil.which("fish"), "fish not on PATH")
 class FishIntegrationTests(unittest.TestCase):
@@ -802,6 +835,22 @@ class FishIntegrationTests(unittest.TestCase):
 
 class CliIntegrationTests(unittest.TestCase):
     """End-to-end runs against a local `cat` (or similar) under a real pty."""
+
+    def test_early_target_death_exits_1_with_capture_and_explanation(self):
+        # CLI shape of the #37 fix: the failed run still shows the
+        # capture (stripped, like a successful one) on stdout, explains
+        # the death and what was never sent on stderr, and exits 1 --
+        # instead of exit-0 with a masquerading capture.
+        result = run_cli(
+            ["--cmd", 'bash -c "echo pre-death; exit 5"', *FAST,
+             "a", "ENTER", "b", "ENTER"],
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"pre-death", result.stdout)
+        self.assertIn(b"status 5", result.stderr)
+        self.assertIn(b"after 0 of 4 steps", result.stderr)
+        self.assertIn(b"pty echo", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
 
     def test_step_without_enter_is_typed_but_never_submitted(self):
         # README/NOTES.md: no step gets an implicit trailing newline, so
