@@ -32,6 +32,33 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.5: ANSI stripping actually strips; TODO.md; CI hardening
+
+- **ansi: ST-terminated OSC sequences are stripped now.** The regex's
+  OSC branch only matched the BEL terminator, so `ESC ] payload ESC \`
+  — fish's OSC 133 prompt marks, OSC 0 titles, OSC 8 hyperlinks, and
+  terminal-puppeteer's *own* `--answer-queries` OSC 11 reply — survived
+  into default-stripped output as visible garbage (`]133;C;cmdline_url=...`
+  was all over this session's captures before anyone asked why). An OSC
+  payload cannot contain ESC or BEL, so the negated classes are exact;
+  unterminated OSCs stay untouched (strip-what-is-provable, unchanged).
+  Five new regex tests including the hyperlink and the
+  payload-ends-then-next-sequence boundary.
+- **TODO.md returns** (the old todo.md went away in the package split):
+  the working list this entry came from, with blockers named on items
+  that can't be done from here (live `--ssh` needs a second host).
+- **CI hardening**: packaging job now asserts the README's man-page
+  claim — wheel contains `share/man/man1/terminal-puppeteer.1`, it
+  installs into the venv's `share/man/man1/`, `man --warnings -l`
+  accepts the installed copy (data-files is a deprecated setuptools
+  feature; this is the tripwire). Test matrix gains 3.14 (the author
+  machine's and nix build's version). New tests: pyproject/package
+  version-sync (was comment-enforced), `python -m terminal_puppeteer`
+  entry point. Tests 123 → 129.
+- 0.3.4 → 0.3.5 (pyproject, script version, man `.TH`).
+
+---
+
 ## 2026-09-07 — 0.3.4: --rows/--cols; WAIT-FOR fails fast on a dying target
 
 - **`--rows`/`--cols`** (defaults 24/80, matching 0.3.3's TIOCSWINSZ):
