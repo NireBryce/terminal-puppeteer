@@ -13,6 +13,67 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.0: RAW:/SLEEP/WAIT-FOR steps, --answer-queries, BEL note, Nix CI (#43–#47, #36)
+
+- Asked to "implement solutions to github issues"; the tracker had seven
+  open. Five were implementable code changes (#43–#47), plus #36's CI
+  gap; #37 (fish) asks for verification on a normal non-sandboxed
+  machine and stays open untouched. Landed as one batch, one bullet per
+  logical piece, same shape as #24's batch entry.
+- **#45 — `RAW:<escapes>` steps**: bytes through a `decode_raw()`
+  bind/readline-style escape parser (`\e`, `\C-x` for letters plus
+  `@[\]^_`, `\xHH`, `\a \b \t \n \v \f \r`, `\\`; unknown escapes stay
+  literal), sent as ONE write — an ESC step followed by `'[I'` text is
+  two writes, and the gap between them is a window for the target's
+  escape-sequence parser to time out and discard the partial sequence
+  (ble.sh's decoder does exactly that). Explicit prefix, so plain text
+  that merely starts with a backslash never changes meaning.
+- **#44 — `SLEEP <seconds>`/`WAIT <seconds>`**: the first driver-side
+  steps that wait instead of write (`keys.parse_wait_step` returns
+  None / seconds / ValueError; `run()` drains instead of writing).
+  Replaces the target-side `'sleep 5' ENTER` workaround, which lands in
+  shell history, fires PROMPT_COMMAND/precmd hooks, and isn't available
+  to non-shell targets at all.
+- **#46 — `WAIT-FOR:<pattern>`** (+ `--wait-for-timeout`, default 10s):
+  drains until the ANSI-stripped output accumulated so far matches —
+  a literal substring, or a `/regex/` — and fails the run otherwise
+  (exit 1, one stderr line naming the step and the last output seen),
+  never a slow no-op. Matching the stripped stream is the point: a line
+  editor redrawing mid-marker interleaves cursor-positioning escapes
+  into the raw bytes of the thing being waited for. Strips the whole
+  accumulator per poll rather than a tail, because escape sequences
+  straddle reads.
+- **#43 — `--answer-queries`**: canned DA2/DA1/cursor-position/
+  XTVERSION replies installed in `drain()` (each answered at most once
+  per run, matched against accumulated output since queries can
+  straddle reads). Opt-in because the replies are canned lies; default
+  behavior unchanged. NOTES.md's unanswered-queries gotcha now tells
+  the apply-vs-not ble.sh story (verified in issue #43: same session
+  with/without the responder, byte-level capture as the signal) and
+  points at the flag.
+- **#47 — BEL note**: after the run, a stderr line counting `\x07`
+  bytes — invisible in both stripped and raw output, but the standard
+  unbound-key/alert signal, and the motivating bug *was* a bell.
+  Counted on the stripped stream so a BEL terminating an OSC sequence
+  (part of the sequence, not a bell) doesn't count. Advisory only, no
+  stdout change.
+- **#36 — `.github/workflows/nix.yml`**: `nix flake check`, `nix build
+  .#default` + a `--version` smoke of the built binary, and
+  `nix-build default.nix` + the same smoke. All four commands verified
+  locally on a real NixOS machine (all passed, real builds); the
+  GitHub Actions run itself hasn't happened yet — watch it on the
+  workflow's first push, per the #12 precedent of confirming the run,
+  not just the YAML.
+- Tests 65 → 105. Writing them surfaced two real pty-rendering
+  surprises, both now asserted explicitly: a cooked pty echoes a real
+  ESC byte in *input* as the two literal characters `^[` (ECHOCTL), so
+  the --answer-queries reply surfaces as `^[[>85;3800;0c` and a
+  `RAW:\e[I` echo as `^[[I`; and `cat` in canonical mode never
+  re-emits an unterminated write, so RAW:-step byte-exactness is
+  proven through `stty -icanon` + `od` instead of cat's echo.
+- Version 0.2.0 → 0.3.0 (script, pyproject.toml, man page's `.TH`) —
+  a real feature release, same precedent as #24's 0.1.0 → 0.2.0.
+
 ## 2026-08-24 — Direct tests for driver.py and print_key_list (#40)
 
 - Asked to "write tests" with no further context; surveyed actual
