@@ -13,6 +13,67 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.1: fish works — controlling terminal + full query answering (#37)
+
+- Picking up #37's "verify on a normal machine" ask, on a real NixOS
+  desktop this time (fish 4.8.1 via `nix shell`, no sandbox): the
+  original sandbox attribution was **wrong**. Through the tool, fish
+  reproduced exactly — and `waitpid` showed why it looked so weird:
+  fish **exits rc=1 right after its two startup warnings**, and the
+  "echoed but never executed" commands were the pty's kernel
+  line-discipline echo over a dead target. The tool still exited 0.
+- **Root cause, first layer**: `run()` spawned the target onto the pty
+  without `setsid()`, so the pty was never the target's controlling
+  terminal. Every target lost job control; bash/zsh masked it with a
+  warning and kept going, fish treated it as fatal. Fixed with
+  `preexec_fn` doing `setsid()` + `TIOCSCTTY` (subprocess has fds 0/1/2
+  already dup'd to the pty by preexec time). bash/zsh lose their
+  warnings and gain real job control (CTRL-C is a genuine SIGINT to
+  the foreground job now — `$-` gains its `m`); fish comes alive.
+- **Root cause, second layer**: with the controlling terminal, fish
+  then hung before its first prompt on its startup query storm
+  (kitty-keyboard, OSC 11, DA1, DSR, DCS termcap — beyond what #43's
+  responder covered). Widened `QUERY_RESPONDERS` to that set (replies
+  verified live against fish), and DA1's pattern now also matches the
+  `\e[0c` form fish sends.
+- **And a third finding the fish chase forced**: answering each query
+  once per run wasn't enough — fish re-sends its queries on every
+  prompt redraw, times out on an unanswered repeat, redraws, and
+  *flushes its input buffer*, eating keystrokes typed into that window
+  (this is why every "should work now" test kept coming back SILENT
+  with no echo at all: the editor was live, the bytes were being
+  flushed). Replying to every occurrence, same as a real terminal,
+  settles the redraws. `drain()`'s answered-set became an occurrence
+  counter per pattern; callable replies (termcap echoes the queried
+  capname) replace the old fixed-bytes-only shape.
+- Usage note that fell out: `connect-wait`/`SLEEP` drain with
+  early-exit-on-quiet, so against a slow-initializing target like fish
+  a bare delay lands **mid-init**, where typed-ahead keystrokes get
+  swallowed. Pacing on the target's own output (`WAIT-FOR` on a prompt
+  marker, then a settle beat) is the reliable shape — now the
+  documented recipe for fish, and what the new fish tests do.
+- Also fixed in passing, surfaced by the new bash -i tests: `run()`'s
+  kill path never reaped the child (`proc.kill()` then no `wait()`),
+  ResourceWarning + unreaped process whenever the target ignored
+  SIGTERM — which is every interactive shell. Now waited.
+- Tests 105 → 115: per-occurrence reply counting, the fish query-set
+  coverage, controlling-terminal/session assertions, bash -i job
+  control (`himBH`), CTRL-C interrupting `sleep 30` (`done-130`), and
+  two fish tests (executes with `--answer-queries`; fails loudly
+  without it) that skip where fish isn't installed. Full suite green;
+  fish verified through the real CLI too.
+- Docs: README fish paragraph rewritten from "couldn't be verified" to
+  verified-with-caveats; `--answer-queries` sections (README/man) list
+  the widened query set and per-occurrence answering; man CAVEATS now
+  says job control works and warns that a dead target looks like a
+  quiet run; NOTES.md gets the fish story and the check-your-target-
+  is-alive gotcha. 0.2.0 → 0.3.1 (pyproject, script version, man
+  `.TH`).
+
+---
+
+
+
 ## 2026-09-07 — 0.3.0: RAW:/SLEEP/WAIT-FOR steps, --answer-queries, BEL note, Nix CI (#43–#47, #36)
 
 - Asked to "implement solutions to github issues"; the tracker had seven
