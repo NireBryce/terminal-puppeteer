@@ -11,7 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.13"]
+        # 3.14 is what this project's own author machine and the nix
+        # build run; 3.9 is the supported floor.
+        python-version: ["3.9", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -42,9 +44,17 @@ jobs:
           python-version: "3.13"
       - run: python3 -m pip install build
       - run: python3 -m build
+      # README promises the man page ships with an install; data-files
+      # are a deprecated setuptools feature, so assert it every push --
+      # the day it silently stops working, this fails before a release
+      # does.
+      - run: python3 -m zipfile -l dist/*.whl | grep -q share/man/man1/terminal-puppeteer.1
       - run: |
           python3 -m venv /tmp/scratch-venv
           /tmp/scratch-venv/bin/pip install dist/*.whl
+      - run: |
+          test -f /tmp/scratch-venv/share/man/man1/terminal-puppeteer.1
+          man --warnings -l /tmp/scratch-venv/share/man/man1/terminal-puppeteer.1
       - run: |
           cd /tmp
           /tmp/scratch-venv/bin/terminal-puppeteer --version
