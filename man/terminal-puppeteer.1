@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.3" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.4" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -11,6 +11,8 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-settle " " \fISECONDS\fR]
 .RB [ \-\-connect\-wait " " \fISECONDS\fR]
 .RB [ \-\-wait\-for\-timeout " " \fISECONDS\fR]
+.RB [ \-\-rows " " \fIROWS\fR]
+.RB [ \-\-cols " " \fICOLS\fR]
 .RB [ \-\-raw ]
 .RB [ \-\-answer\-queries ]
 .RB [ \-v ]
@@ -24,6 +26,8 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-settle " " \fISECONDS\fR]
 .RB [ \-\-connect\-wait " " \fISECONDS\fR]
 .RB [ \-\-wait\-for\-timeout " " \fISECONDS\fR]
+.RB [ \-\-rows " " \fIROWS\fR]
+.RB [ \-\-cols " " \fICOLS\fR]
 .RB [ \-\-raw ]
 .RB [ \-\-answer\-queries ]
 .RB [ \-v ]
@@ -254,7 +258,18 @@ probe-then-fallback target to take its normal path. See
 .TP
 .BI \-\-wait\-for\-timeout " SECONDS"
 How long a \fBWAIT\-FOR:\fR step may wait for its pattern before
-failing the run (default: \fB10\fR).
+failing the run (default: \fB10\fR). If the target dies mid-wait the
+run fails immediately instead \-\- see
+.B EXIT STATUS
+below.
+.TP
+.BI \-\-rows " ROWS"
+.TP
+.BI \-\-cols " COLS"
+Terminal size reported to the target through the pty (defaults:
+\fB24\fR rows by \fB80\fR columns, a fresh terminal's). Override for
+size-sensitive repros \-\- a TUI that only misrenders below N columns,
+an editor's wrapping, a progress-bar width.
 .TP
 .BR \-v ", " \-\-verbose
 Print each step to standard error as it is sent (\fB>> TAB\fR), for
@@ -318,8 +333,11 @@ step whose pattern never arrived within
 .BR \-\-wait\-for\-timeout :
 the message names the step and the last output seen. The same status
 also reports a target that exited or was killed while steps remained
-un-sent \-\- the message names the exit status or signal, how many steps
-were never sent, and which step would have been next, and the partial
+un-sent \-\- the message names the exit status or signal and what was in
+progress: a death between steps names how many were never sent and
+which step would have been next; a death during a
+.B WAIT\-FOR:
+step names the pattern that can no longer arrive. The partial
 capture still prints to standard output (the capture is the diagnostic;
 the un-sent steps would only have been echoed by the pty to a target
 that is no longer there). Any other

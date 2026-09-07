@@ -163,6 +163,8 @@ def main():
     p.add_argument('--raw', action='store_true', help='print output with ANSI escape sequences intact instead of stripped')
     p.add_argument('--answer-queries', action='store_true', help="answer terminal capability queries (\\e[>c, \\e[6n, ...) with canned 'normal terminal' replies -- a target that probes-then-fallbacks can behave differently with no reply, so repros silently diverge from a real terminal (default: off, queries go unanswered)")
     p.add_argument('--wait-for-timeout', type=float, default=10.0, metavar='SECONDS', help='how long a WAIT-FOR step may wait for its pattern before failing the run (default: 10)')
+    p.add_argument('--rows', type=int, default=24, metavar='ROWS', help='terminal rows reported to the target through the pty (default: 24)')
+    p.add_argument('--cols', type=int, default=80, metavar='COLS', help='terminal columns reported to the target through the pty (default: 80)')
     p.add_argument('--ssh-arg', dest='ssh_args', action='append', default=[], help='extra arg to pass through to ssh, only with --ssh (repeatable)')
     p.add_argument('--env', dest='env_vars', action='append', default=[], metavar='KEY=VALUE', help="extra environment variable for the target process (repeatable) -- e.g. --env TERM=dumb, set before the target starts rather than raced by an early step")
     p.add_argument('-v', '--verbose', action='store_true', help='print each step to stderr as it is sent')
@@ -174,6 +176,11 @@ def main():
 
     if not args.ssh and not args.cmd:
         p.error('one of the arguments --ssh --cmd is required')
+
+    if args.rows < 1 or args.cols < 1:
+        # A 0x0 tty is exactly the bug the defaults exist to fix -- allow
+        # overriding the size, not un-setting it.
+        p.error('--rows/--cols must be at least 1')
 
     if args.cmd and args.ssh_args:
         p.error('--ssh-arg only applies to --ssh')
@@ -219,6 +226,7 @@ def main():
             argv, steps, args.step_delay, args.settle, args.connect_wait,
             env=env, verbose=args.verbose, answer_queries=args.answer_queries,
             wait_for_timeout=args.wait_for_timeout,
+            rows=args.rows, cols=args.cols,
         )
     except OSError as e:
         # argv[0] not found, not executable, etc. -- a real runtime failure,

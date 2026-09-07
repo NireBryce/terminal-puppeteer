@@ -13,6 +13,35 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.4: --rows/--cols; WAIT-FOR fails fast on a dying target
+
+- **`--rows`/`--cols`** (defaults 24/80, matching 0.3.3's TIOCSWINSZ):
+  size-sensitive repros — a TUI that only misrenders below N columns,
+  an editor's wrapping — can now pick their own size. Values below 1
+  are a usage error: the flags may override the size, not un-set it
+  (0x0 is exactly the bug the defaults fix).
+- **WAIT-FOR fails fast when the target dies mid-wait** (the other
+  loose end from 0.3.2's loud-failure work): a dead target can never
+  produce the pattern, so burning the whole `--wait-for-timeout` budget
+  was a slow no-op ending in a misleading "no match". The wait now
+  notices the death on each poll and raises `TargetDied` immediately —
+  "target exited with status 3 while WAIT-FOR step '...' was still
+  waiting -- the pattern cannot arrive any more". The pattern is
+  re-checked before the liveness test, so a marker in the target's
+  dying output burst still matches normally. Exit-status wording
+  factored into `_exit_status_why`, shared with run()'s step-loop
+  check.
+- Tests 119 → 123: flag passthrough end to end (`stty size` → `40 120`
+  through the CLI), 0/negative size usage errors, the mid-wait
+  fail-fast (and its boundary — a target already dead before the step
+  starts is run()'s check, a different message shape; the test now
+  keeps the target alive past step start to hit the mid-wait path).
+- Docs: README's Other flags + Exit behavior, man SYNOPSIS/OPTIONS/
+  EXIT STATUS (warning-checked). 0.3.3 → 0.3.4 (pyproject, script
+  version, man `.TH`).
+
+---
+
 ## 2026-09-07 — 0.3.3: the pty has a real window size (24x80); tracker + CI hygiene
 
 - The pty reported **0 0** to anything that read the tty directly —
