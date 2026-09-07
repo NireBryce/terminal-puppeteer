@@ -721,14 +721,20 @@ class DriverStepTests(unittest.TestCase):
         self.assertIn(b"^[[?62;3c", out)                    # DA1 \e[0c
         self.assertIn(b"^[P1+r696e646e", out)               # DCS termcap echo
 
+    @unittest.skipUnless(os.path.exists("/proc/self/stat"), "no /proc here")
     def test_target_gets_the_pty_as_controlling_terminal(self):
         # setsid + TIOCSCTTY in run()'s spawn (issue #37): the target
         # runs in its own session, so tcgetpgrp/tcsetpgrp and job control
         # work like a real terminal. Before this, the target inherited
         # the tool's session and the pty was never its controlling
         # terminal -- bash/zsh printed 'no job control' warnings and ran
-        # degraded; fish exited outright.
-        argv = ["bash", "-c", "ps -o sid= -p $$; cat"]
+        # degraded; fish exited outright. Session read straight from
+        # /proc/self/stat's session field (6) -- no ps dependency,
+        # which doesn't exist in nix build sandboxes.
+        argv = [
+            "bash", "-c",
+            "read -r pid comm state ppid pgrp sid _ < /proc/self/stat; echo $sid; cat",
+        ]
         out = driver.run(argv, ["x"], 0.3, 0.3, 0.3)
         target_sid = int(out.split(b"\r\n", 1)[0].strip())
         self.assertNotEqual(target_sid, os.getsid(0))
