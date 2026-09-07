@@ -102,12 +102,16 @@ Exactly one of these, always:
 Shell-agnostic by construction — `--cmd` execs whatever `argv` you give
 it under a pty, nothing bash-specific anywhere in this tool. `--cmd 'zsh
 -i'`, `--cmd 'fish'`, `--cmd 'tmux new -A -s work'` all work the same
-way `--cmd 'bash -i'` does. (`zsh -i` verified directly; see NOTES.md's
-live-redraw gotcha for what its captures look like. `fish` couldn't be
-verified from the sandbox this was written in — see
-[issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37) —
-but nothing in this tool is shell-specific, so there's no design reason
-to expect it to behave differently from any other target.)
+way `--cmd 'bash -i'` does. The target runs in its own session with the
+pty as its controlling terminal, so job control works like a real
+terminal: `CTRL-C` delivers SIGINT to the foreground job, CTRL-Z/`fg`
+work, and interactive shells start without job-control warnings. (`zsh
+-i` verified directly; see NOTES.md's live-redraw gotcha for what its
+captures look like. `fish` verified on real hardware too —
+[issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37)
+— with the caveat that it needs `--answer-queries` (below) to get past
+its startup capability probing, and `WAIT-FOR` on a prompt marker to
+pace past that probing instead of typing into it.)
 
 ## Steps
 
@@ -236,8 +240,13 @@ watching a long or slow multi-step run happen live instead of waiting
 for the whole transcript to print at the end — output on stdout is
 unaffected either way.
 
-`--answer-queries` answers terminal capability queries (`\e[>c`, `\e[6n`,
-...) with canned "normal terminal" replies while the run is happening. A
+`--answer-queries` answers terminal capability queries (device
+attributes, cursor position, XTVERSION, kitty-keyboard protocol, OSC 11
+background color, termcap strings — the set verified against a real
+probe-heavy target, fish 4.8) with canned "normal terminal" replies
+while the run is happening, answering every occurrence: a line editor
+re-queries on every prompt redraw, and a real terminal answers every
+time. A
 bare pty answers nothing; that's usually fine, but a target that
 probes-then-fallbacks can take a genuinely different code path with no
 reply — so a repro can silently fail to reproduce behavior a real
