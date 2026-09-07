@@ -13,6 +13,25 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — CI: fish tests run for real; wheel round-trip job
+
+- The two fish integration tests skipped everywhere — no fish on
+  GitHub runners, none off-PATH locally — so #49's fix was never
+  exercised on a schedule. test.yml installs the fish-shell release-4
+  PPA series (the tests were verified against 4.8.1; distro repos
+  carry 3.x, whose startup probing differs), and the tests gate on
+  fish major >= 4 via `fish --version` instead of mere presence, so
+  other fish skips them rather than failing on an unwritten-for path.
+- New packaging job: build the wheel, pip install into a scratch venv,
+  run the installed entry point from OUTSIDE the checkout (--version,
+  --list-keys, one real cat repro via --steps-file -). Guards #30's
+  historical failure mode — a wrapper shadowing the package it
+  imported was invisible in place and only broke installed.
+- No version bump: nothing user-facing changed. 121 ran locally (2
+  fish skips off-PATH); CI's fish slots now covered by the PPA.
+
+---
+
 ## 2026-09-07 — 0.3.4: --rows/--cols; WAIT-FOR fails fast on a dying target
 
 - **`--rows`/`--cols`** (defaults 24/80, matching 0.3.3's TIOCSWINSZ):
