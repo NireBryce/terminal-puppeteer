@@ -21,6 +21,7 @@ Deliberately stdlib-only (`unittest`), matching the project itself.
 import contextlib
 import io
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -841,7 +842,25 @@ class DriverStepTests(unittest.TestCase):
         self.assertIn(b"got-hi", out)
 
 
-@unittest.skipUnless(shutil.which("fish"), "fish not on PATH")
+def _fish_major():
+    """None when fish is absent; its major version otherwise. The fish
+    tests were verified against fish 4.x (issue #37's chase) -- 3.x
+    probes less on startup and takes different code paths, so CI
+    installs the release-4 series and other fish skips these tests."""
+    fish = shutil.which("fish")
+    if not fish:
+        return None
+    out = subprocess.run(
+        [fish, "--version"], capture_output=True, text=True
+    ).stdout
+    m = re.search(r"version (\d+)", out)
+    return int(m.group(1)) if m else None
+
+
+_FISH4 = (_fish_major() or 0) >= 4
+
+
+@unittest.skipUnless(_FISH4, "fish 4 not on PATH")
 class FishIntegrationTests(unittest.TestCase):
     """The issue #37 verification, kept as tests: fish works under this
     tool given both fixes its refusal exposed (controlling terminal +
