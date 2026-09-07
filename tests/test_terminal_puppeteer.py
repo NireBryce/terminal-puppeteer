@@ -680,13 +680,13 @@ class DriverStepTests(unittest.TestCase):
         out = driver.run(argv, ["WAIT-FOR:early-bird"], 0.1, 0.1, 0.5)
         self.assertIn(b"early-bird", out)
 
-    def test_answer_queries_replies_once_per_query(self):
+    def test_answer_queries_replies_to_each_query_occurrence(self):
         # The target sends a DA2 query; the reply is written into the
         # target's input and comes back via the pty's own echo -- present
-        # exactly once with the flag, absent without it. Real pty, real
-        # responder, no mocks. The echo shows the reply's ESC byte the
-        # way a cooked pty's ECHOCTL renders any control char: as the
-        # two literal characters ^[, not as \x1b.
+        # with the flag, absent without it. Real pty, real responder, no
+        # mocks. The echo shows the reply's ESC byte the way a cooked
+        # pty's ECHOCTL renders any control char: as the two literal
+        # characters ^[, not as \x1b.
         argv = ["bash", "-c", "printf '\\033[>c'; cat"]
         out = driver.run(
             argv, ["x"], 0.3, 0.2, 0.3, answer_queries=True,
@@ -694,6 +694,104 @@ class DriverStepTests(unittest.TestCase):
         self.assertEqual(out.count(b"^[[>85;3800;0c"), 1)
         out = driver.run(argv, ["x"], 0.3, 0.2, 0.3)
         self.assertNotIn(b"^[[>85;3800;0c", out)
+
+    def test_answer_queries_replies_again_when_a_query_recurs(self):
+        # A line editor re-sends its capability queries on every prompt
+        # redraw, and a real terminal answers every time. The old
+        # once-per-run behavior left repeats unanswered, which is its own
+        # fallback trigger: verified against fish 4.8.1 (#37) -- it times
+        # out, redraws, and flushes its input buffer, eating keystrokes
+        # typed into that window.
+        argv = ["bash", "-c", "printf '\\033[6n\\033[6n'; cat"]
+        out = driver.run(argv, ["x"], 0.4, 0.3, 0.3, answer_queries=True)
+        self.assertEqual(out.count(b"^[[1;1R"), 2)
+
+    def test_answer_queries_covers_the_query_types_fish_sends(self):
+        # fish 4.x probes these on startup and hangs before its first
+        # prompt without replies (issue #37, verified on real hardware):
+        # kitty-keyboard, OSC 11 background color, DA1 with param 0
+        # (the \e[0c form), and a DCS termcap query. One run, all four.
+        argv = [
+            "bash", "-c",
+            "printf '\\033[?u\\033]11;?\\033\\\\\\033[0c\\033P+q696e646e\\033\\\\'; cat",
+        ]
+        out = driver.run(argv, ["x"], 0.4, 0.3, 0.3, answer_queries=True)
+        self.assertIn(b"^[[?1u", out)                       # kitty-keyboard
+        self.assertIn(b"^[]11;rgb:0000/0000/0000", out)     # OSC 11
+        self.assertIn(b"^[[?62;3c", out)                    # DA1 \e[0c
+        self.assertIn(b"^[P1+r696e646e", out)               # DCS termcap echo
+
+    def test_target_gets_the_pty_as_controlling_terminal(self):
+        # setsid + TIOCSCTTY in run()'s spawn (issue #37): the target
+        # runs in its own session, so tcgetpgrp/tcsetpgrp and job control
+        # work like a real terminal. Before this, the target inherited
+        # the tool's session and the pty was never its controlling
+        # terminal -- bash/zsh printed 'no job control' warnings and ran
+        # degraded; fish exited outright.
+        argv = ["bash", "-c", "ps -o sid= -p $$; cat"]
+        out = driver.run(argv, ["x"], 0.3, 0.3, 0.3)
+        target_sid = int(out.split(b"\r\n", 1)[0].strip())
+        self.assertNotEqual(target_sid, os.getsid(0))
+
+    def test_bash_interactive_gets_job_control(self):
+        # Two symptoms of the same fix: no job-control warning, and `$-`
+        # containing `m` (monitor mode) -- with `m`, CTRL-C/CTRL-Z/fg
+        # actually reach foreground jobs.
+        out = driver.run(
+            ["bash", "--norc", "-i"], ["echo $-", "ENTER"], 1.0, 1.0, 0.5,
+        )
+        self.assertNotIn(b"cannot set terminal process group", out)
+        self.assertIn(b"himBH", out)
+
+    def test_ctrl_c_interrupts_a_foreground_job(self):
+        # With job control, CTRL-C is a real SIGINT to the foreground
+        # process group: sleep dies (exit status 130), the shell
+        # survives, and the next line runs. The expanded `done-130`
+        # proves execution -- the typed echo of `done-$?` alone would
+        # appear either way.
+        out = driver.run(
+            ["bash", "--norc", "-i"],
+            ["sleep 30", "ENTER", "SLEEP 0.5", "CTRL-C",
+             "echo done-$?", "ENTER"],
+            1.0, 1.0, 0.5,
+        )
+        self.assertIn(b"done-130", out)
+
+
+@unittest.skipUnless(shutil.which("fish"), "fish not on PATH")
+class FishIntegrationTests(unittest.TestCase):
+    """The issue #37 verification, kept as tests: fish works under this
+    tool given both fixes its refusal exposed (controlling terminal +
+    answered queries), and fails loudly without the second one. Skipped
+    wherever fish isn't installed."""
+
+    ARGV = ["fish", "-N", "-C", "function fish_prompt; echo -n FISHREADY; end"]
+
+    def test_fish_executes_commands_with_answer_queries(self):
+        # -N skips user config, -C pins a known prompt marker: the
+        # WAIT-FOR paces on fish finishing its startup query storm
+        # instead of hoping a fixed delay lands after it (drain()'s
+        # early-exit-on-quiet makes bare connect-wait land mid-init,
+        # where fish's query reader swallows typed-ahead keystrokes).
+        out = driver.run(
+            self.ARGV,
+            ["WAIT-FOR:FISHREADY", "SLEEP 0.8", "echo hi", "ENTER"],
+            2.0, 2.0, 5.0, answer_queries=True,
+        )
+        # Typed echo + command output, at least.
+        self.assertGreaterEqual(out.count(b"hi"), 2)
+
+    def test_fish_fails_loudly_without_answer_queries(self):
+        # The controlling terminal alone is not enough: fish still
+        # probes kitty/OSC 11/DA1/termcap on startup and hangs before
+        # its first prompt on a bare pty. WAIT-FOR turns that hang into
+        # a loud failure naming the step, never a slow no-op.
+        with self.assertRaises(driver.WaitForTimeout):
+            driver.run(
+                self.ARGV,
+                ["WAIT-FOR:FISHREADY", "SLEEP 0.8", "echo hi", "ENTER"],
+                2.0, 2.0, 5.0, wait_for_timeout=4,
+            )
 
 
 class CliIntegrationTests(unittest.TestCase):

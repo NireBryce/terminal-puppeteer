@@ -35,7 +35,15 @@ artifact until a small canned-reply responder was added mid-drain, at
 which point it matched the real terminal byte for byte. That responder is
 now built in as `--answer-queries` (opt-in — the replies are canned lies
 about terminal capabilities, and the default stays exactly as described
-here). If a target hangs waiting
+here). It answers on every occurrence, not once per run — a line editor
+re-sends its capability queries on every prompt redraw, and a real
+terminal answers each time; fish 4.x treated an unanswered repeat as a
+fallback trigger, timing out, redrawing, and *flushing its input
+buffer*, which ate keystrokes typed into that window. The responder
+covers the query set verified against fish 4.8.1 (DA1/DA2, cursor
+position, XTVERSION, kitty-keyboard, OSC 11 background color, DCS
+termcap) — if a target probes something exotic, it still goes
+unanswered. If a target hangs waiting
 indefinitely on one of these instead of timing out and continuing, that's
 a real limitation of this approach — there's no cheap general fix short of
 implementing a real terminal-query responder, which is more machinery than
@@ -48,6 +56,33 @@ target's environment from the moment it starts, before it's read a
 single byte), preferred over setting it as an early step (`'export
 TERM=dumb' ENTER`), which still races whatever probing happens before
 that step lands.
+
+## The target now gets a real controlling terminal — and a dead target still looks like a quiet run
+
+The pty used to be second-class in one more way: the target was spawned
+onto it without `setsid()`, so the pty was never the target's
+*controlling terminal* and job control never worked. bash and zsh
+printed `cannot set terminal process group` warnings at startup and ran
+degraded (no SIGINT to foreground jobs, no CTRL-Z/`fg`) — easy to
+dismiss as cosmetic. fish was the honest one: it exits outright, rc=1,
+before drawing a prompt ([issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37),
+verified on real hardware — the original sandbox attribution was
+wrong). The tool now puts the target in its own session with the pty as
+its controlling terminal, so `CTRL-C` is a real SIGINT to the
+foreground job, CTRL-Z/`fg` work, and fish runs like any other shell
+(given `--answer-queries`, per the gotcha above — without it fish hangs
+before its first prompt, and a `WAIT-FOR` on the prompt turns that into
+a loud failure).
+
+The part that stays true: **the tool exits 0 even if the target died at
+startup.** fish's refusal used to masquerade perfectly — every step
+"echoed" in the capture (that was the pty's kernel line-discipline
+echo, not the target — nobody was reading), and the run still exited 0.
+When a capture looks like commands were ignored, check the target is
+actually alive: look for the target's *output*, not the echo of what
+you typed (a step's own echo appears whether or not anything executes),
+or use `WAIT-FOR` on an output-only marker so the run fails loudly
+instead of pretending.
 
 ## A fancy line editor's own redraws look like typos in a flat capture
 

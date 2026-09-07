@@ -6,16 +6,44 @@ terminal_puppeteer.cli for the CLI surface that calls these, and
 README.md's Timing/Exit behavior sections for what this is actually
 implementing and why.
 """
+import fcntl
 import os
 import pty
 import re
 import select
 import subprocess
 import sys
+import termios
 import time
 
 from .ansi import ANSI
 from .keys import encode_step, parse_wait_for_step, parse_wait_step
+
+
+def _claim_target_tty():
+    """Runs in the child, between fork() and exec() (Popen preexec_fn -- a
+    single-threaded parent is a precondition, and this tool has no
+    threads). Gives the target its own session with the pty as its
+    controlling terminal: setsid() alone only detaches it from ours,
+    dup2-ing the slave fd onto 0/1/2 does not acquire controlling status
+    (only opening a tty can, post-setsid), so TIOCSCTTY is what makes
+    tcgetpgrp/tcsetpgrp work in the target. Without it, bash/zsh print
+    their 'no job control' warnings and run degraded (no SIGINT to
+    foreground jobs, no CTRL-Z/fg), and fish exits outright with rc=1
+    before drawing a prompt (issue #37). subprocess guarantees fds 0/1/2
+    are already the pty by preexec_fn time, so fd 0 is the slave."""
+    os.setsid()
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
+def _termcap_reply(match):
+    # Reply to a DCS termcap query (\eP+q<capname-as-hex>\e\\) with the
+    # same capname and no value -- the shape verified live against fish
+    # 4.8.1 (issue #37): enough for a probing target to treat the
+    # capability as absent and move on instead of waiting for a reply
+    # that never comes. Reply depends on which capability was asked, so
+    # this is a callable rather than fixed bytes.
+    return b'\x1bP1+r' + match.group(1) + b'\x1b\\'
 
 # Canned replies to the terminal capability queries a target may send its
 # terminal on startup (--answer-queries). A bare pty answers nothing, and
@@ -24,14 +52,27 @@ from .keys import encode_step, parse_wait_for_step, parse_wait_step
 # repros silently diverge from what a human sees, not just render
 # differently (issue #43). These say "konsole-ish xterm" just well enough
 # for such a target to take its normal-terminal path; they are canned
-# lies, which is why this is opt-in. Each pattern is answered at most
-# once per run. See NOTES.md's unanswered-queries gotcha for the default
-# behavior this flag changes.
+# lies, which is why this is opt-in. The kitty/OSC 11/termcap entries
+# exist because fish 4.x probes exactly those on startup and hangs before
+# its first prompt without replies even when it has a controlling
+# terminal (verified live, issue #37). A reply may be fixed bytes or a
+# callable taking the match (termcap: the reply echoes the queried
+# capname). Queries are answered on EVERY occurrence, not once per run:
+# a real terminal answers each time, and a line editor re-sends its
+# capability queries on every prompt redraw -- an unanswered repeat sends
+# the target down its no-reply fallback path mid-session (fish times
+# out, redraws, and flushes its input buffer, eating keystrokes typed
+# into the race window). Matches are checked against the accumulated
+# output because a query can straddle two reads. See NOTES.md's
+# unanswered-queries gotcha for the default behavior this flag changes.
 QUERY_RESPONDERS = [
     (re.compile(rb'\x1b\[>c'), b'\x1b[>85;3800;0c'),          # DA2 (terminal name/version)
-    (re.compile(rb'\x1b\[c'), b'\x1b[?62;3c'),                # DA1
+    (re.compile(rb'\x1b\[0?c'), b'\x1b[?62;3c'),              # DA1 (bare, or param 0 -- fish sends \e[0c)
     (re.compile(rb'\x1b\[6n'), b'\x1b[1;1R'),                 # DSR cursor position
     (re.compile(rb'\x1b\[>0?q'), b'\x1bP>| Konsole (250203)\x1b\\'),  # XTVERSION
+    (re.compile(rb'\x1b\[\?u'), b'\x1b[?1u'),                 # kitty keyboard protocol query
+    (re.compile(rb'\x1b\]11;\?'), b'\x1b]11;rgb:0000/0000/0000\x1b\\'),  # OSC 11 background color
+    (re.compile(rb'\x1bP\+q([0-9a-f]*)\x1b\\'), _termcap_reply),  # DCS termcap query
 ]
 
 # The reply bytes are written into the target's input, so the pty's own
@@ -67,12 +108,16 @@ def drain(controller, seconds, chunk=65536, answered=None):
         got_data = True
         if answered is not None:
             # Checked against the accumulated output, not just this chunk
-            # -- a query can straddle two reads; the answered set keeps
-            # each reply to once per run.
+            # -- a query can straddle two reads. `answered[i]` counts how
+            # many occurrences of pattern i have been replied to; every
+            # new occurrence gets its own reply, same as a real terminal
+            # answering a target that re-queries on every prompt redraw.
             for i, (query, reply) in enumerate(QUERY_RESPONDERS):
-                if i not in answered and query.search(out):
-                    os.write(controller, reply)
-                    answered.add(i)
+                matches = list(query.finditer(out))
+                for m in matches[answered.get(i, 0):]:
+                    os.write(controller,
+                             reply(m) if callable(reply) else reply)
+                answered[i] = len(matches)
     return out
 
 
@@ -99,16 +144,16 @@ def wait_for(controller, seen, step, pattern, timeout, answered=None):
 
 def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
         answer_queries=False, wait_for_timeout=10.0):
-    # pty.openpty() calls these master/slave (matching the underlying POSIX
-    # API and Python's own pty module docs) -- renamed here to the terms
-    # this project already uses everywhere else: `controller` is our end,
-    # `target` is the spawned program's end, same as README.md/NOTES.md's
-    # own vocabulary for "the thing being driven".
+    # The two pty fds are named controller/target (our end / the spawned
+    # program's end) -- the same vocabulary README.md and NOTES.md use
+    # for the thing being driven. pty.openpty()'s own parameter names
+    # mirror the POSIX API's traditional terms; this project
+    # deliberately does not carry them.
     controller, target = pty.openpty()
     try:
         proc = subprocess.Popen(
             argv, stdin=target, stdout=target, stderr=target, close_fds=True,
-            env=env,
+            env=env, preexec_fn=_claim_target_tty,
         )
     except OSError:
         # argv[0] doesn't exist, isn't executable, etc. -- close both ends
@@ -118,7 +163,7 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
         os.close(controller)
         raise
     os.close(target)
-    answered = set() if answer_queries else None
+    answered = {} if answer_queries else None
     try:
         out = drain(controller, connect_wait, answered=answered)
         for step in steps:
@@ -148,5 +193,7 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()  # reaps; an interactive shell ignores SIGTERM, so
+            # the kill path is the normal one for bash -i targets
         os.close(controller)
     return out

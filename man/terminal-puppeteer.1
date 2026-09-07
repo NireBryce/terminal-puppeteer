@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.0" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.1" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -238,8 +238,11 @@ Print output with ANSI escape sequences intact, instead of the default
 of stripping them.
 .TP
 .B \-\-answer\-queries
-Answer terminal capability queries (\ee[>c, \ee[6n, ...) with canned
-"normal terminal" replies while the run is happening. A bare pty
+Answer terminal capability queries (device attributes, cursor position,
+XTVERSION, kitty\-keyboard protocol, OSC 11 background color, termcap
+strings) with canned "normal terminal" replies while the run is
+happening, answering every occurrence \-\- a line editor re\-queries on
+every prompt redraw and a real terminal answers each time. A bare pty
 answers nothing; usually fine, but a target that probes-then-fallbacks
 can take a genuinely different code path with no reply, so a repro can
 silently fail to reproduce behavior a real terminal shows. Opt-in,
@@ -375,7 +378,8 @@ terminal-puppeteer.py \-\-list\-keys
 .SH CAVEATS
 This tool's pty has no terminal emulator behind it, so escape sequences
 a target sends to probe terminal capabilities (cursor position reports,
-device attribute queries) go unanswered \-\- raw, unhandled bytes sitting
+device attribute queries, kitty\-keyboard and background\-color probes,
+termcap strings) go unanswered \-\- raw, unhandled bytes sitting
 at the start of a capture against a program that probes on startup
 (ble.sh, for one) is expected, not a bug in whatever is actually being
 tested. Usually harmless, with a real exception: a target that
@@ -383,7 +387,14 @@ probes-then-fallbacks can take a genuinely different code path with no
 reply, so a repro can silently fail to reproduce what a real terminal
 shows \-\- the opt-in
 .B \-\-answer\-queries
-flag exists for exactly that case. Setting
+flag exists for exactly that case (fish, for one, will not even draw its
+first prompt on a bare pty). The target does get the pty as its
+controlling terminal, so job control (CTRL\-C to a foreground job,
+CTRL\-Z/\fBfg\fR) works as on a real terminal. And the tool exits 0 even
+if the target died at startup \-\- a capture where every step "echoes"
+but nothing executes may be the pty's own line-discipline echo over a
+dead target; check for the target's output, not the echo of your typing.
+Setting
 .B \-\-env TERM=dumb
 avoids some of this for programs that check
 .B $TERM
