@@ -1,0 +1,28 @@
+name: nix
+
+# The other packaging surfaces: flake.nix + package.nix (nix build/run)
+# and default.nix (flake-compat, nix-build without flakes). test.yml only
+# exercises pyproject.toml -- nothing ran the Nix checks at all before
+# this workflow (the gap CLAUDE.md's conventions call out); now the same
+# commands run by hand before a Nix-affecting change run here on every
+# push/PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check
+      - run: nix build .#default
+      # The flake's own output, actually run -- `nix build` proves the
+      # derivation evaluates and builds; this proves the binary works.
+      - run: ./result/bin/terminal-puppeteer --version
+      # The non-flake path: same package through default.nix's
+      # flake-compat shim.
+      - run: nix-build default.nix
+      - run: ./result/bin/terminal-puppeteer --version

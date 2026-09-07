@@ -89,7 +89,10 @@ packaging surfaces (`pyproject.toml`, `flake.nix`, `default.nix`) --
 a change to one doesn't verify the others; `nix build`/`nix-build
 default.nix` are as cheap to actually run as the wheel round-trip and
 just as capable of silently breaking (`nix flake check` catches
-evaluation errors, not runtime ones like this).
+evaluation errors, not runtime ones like this). `.github/workflows/nix.yml`
+runs those Nix checks on every push/PR since 2026-09-07 -- but that's
+slower feedback than running them locally before pushing, not a
+replacement.
 
 **"push" means the `ship` skill, not `git push origin main`.** Branch, PR,
 ask before merging, ask again before deleting the branch — two

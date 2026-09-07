@@ -25,11 +25,23 @@ That block at the start of a capture against ble.sh is *normal* — it's
 ble.sh's own terminal probing failing to get answered, not a bug in
 whatever you're actually testing. Don't chase it. The program still runs
 correctly underneath; it just can't detect terminal capabilities it would
-otherwise use to render more precisely. If a target hangs waiting
+otherwise use to render more precisely. "Runs correctly underneath" has a
+real limit, though: a target that probes-then-fallbacks can take a
+genuinely different *code path* with no reply, so a repro run here can
+silently fail to reproduce what a real terminal shows — verified the
+expensive way: a ble.sh keybinding that applied in konsole did not apply
+through a bare pty, and every negative result from that harness was an
+artifact until a small canned-reply responder was added mid-drain, at
+which point it matched the real terminal byte for byte. That responder is
+now built in as `--answer-queries` (opt-in — the replies are canned lies
+about terminal capabilities, and the default stays exactly as described
+here). If a target hangs waiting
 indefinitely on one of these instead of timing out and continuing, that's
 a real limitation of this approach — there's no cheap general fix short of
 implementing a real terminal-query responder, which is more machinery than
-most repros need. Setting `TERM=dumb` (or another minimal value) avoids
+most repros need (the flag above is deliberately not that; it answers just
+enough for a probe-then-fallback target to take its normal path). Setting
+`TERM=dumb` (or another minimal value) avoids
 some of this for programs that check `$TERM` before deciding whether to
 probe at all -- `--env TERM=dumb` is the race-free way to do it (in the
 target's environment from the moment it starts, before it's read a

@@ -121,6 +121,135 @@ class EncodeStepTests(unittest.TestCase):
         self.assertEqual(keys.encode_step(""), b"")
 
 
+class RawStepTests(unittest.TestCase):
+    """RAW:<escapes> steps (#45): bytes through a bind/readline-style
+    escape parser, as one write -- an ESC step followed by '[I' text is
+    two writes, and the gap between them is a window for the target's
+    escape-sequence parser to time out and discard the partial sequence."""
+
+    def test_csi_sequence_arrives_as_one_write(self):
+        # The case that hit it: konsole sends \e[I / \e[O (focus in/out)
+        # when mode 1004 is enabled; there was no way to inject those.
+        self.assertEqual(keys.encode_step("RAW:\\e[I"), b"\x1b[I")
+        self.assertEqual(keys.encode_step("RAW:\\e[O"), b"\x1b[O")
+
+    def test_prefix_is_case_insensitive(self):
+        self.assertEqual(keys.encode_step("raw:\\e[I"), b"\x1b[I")
+        self.assertEqual(keys.encode_step("Raw:\\t"), b"\t")
+
+    def test_single_char_escapes(self):
+        self.assertEqual(keys.decode_raw(r"\a\b\t\n\v\f\r"),
+                         b"\a\b\t\n\v\f\r")
+        self.assertEqual(keys.decode_raw(r"\e"), b"\x1b")
+        self.assertEqual(keys.decode_raw(r"\\"), b"\\")
+
+    def test_control_key_escapes(self):
+        # ord(key) & 0x1f, the formula bind itself uses: letters both
+        # cases, plus the @[\]^_ range -- \C-[ is \x1b, same byte as \e.
+        self.assertEqual(keys.decode_raw(r"\C-a"), b"\x01")
+        self.assertEqual(keys.decode_raw(r"\C-A"), b"\x01")
+        self.assertEqual(keys.decode_raw(r"\c-z"), b"\x1a")
+        self.assertEqual(keys.decode_raw(r"\C-["), b"\x1b")
+        self.assertEqual(keys.decode_raw(r"\C-@"), b"\x00")
+
+    def test_hex_escapes(self):
+        self.assertEqual(keys.decode_raw(r"\x1b"), b"\x1b")
+        self.assertEqual(keys.decode_raw(r"\x41"), b"A")
+        self.assertEqual(keys.decode_raw(r"\x7"), b"\x07")  # one digit is enough
+        self.assertEqual(keys.decode_raw(r"\x414243"), b"A4243")  # two digits max, then literal
+
+    def test_unknown_escapes_stay_literal(self):
+        # Predictability over silent reinterpretation: same rule as
+        # `echo -e`, never guesswork about what plain text was meant as.
+        self.assertEqual(keys.decode_raw(r"\q"), b"\\q")
+        self.assertEqual(keys.decode_raw(r"\x"), b"\\x")
+        self.assertEqual(keys.decode_raw(r"\xzz"), b"\\xzz")
+        self.assertEqual(keys.decode_raw("trailing\\"), b"trailing\\")
+        self.assertEqual(keys.decode_raw(r"\C-"), b"\\C-")
+
+    def test_plain_text_passes_through_as_utf8(self):
+        self.assertEqual(keys.decode_raw("hi there"), b"hi there")
+        self.assertEqual(keys.decode_raw("café"), "café".encode())
+
+    def test_empty_raw_sends_nothing(self):
+        self.assertEqual(keys.encode_step("RAW:"), b"")
+
+    def test_literal_steps_dont_grow_escape_syntax(self):
+        # Without the explicit RAW: prefix, a backslash is still just a
+        # backslash -- that's the whole reason the prefix exists.
+        self.assertEqual(keys.encode_step(r"\e[I"), b"\\e[I")
+
+
+class ParseWaitStepTests(unittest.TestCase):
+    """SLEEP/WAIT <seconds>: a driver-side pause that sends nothing --
+    unlike a target-side 'sleep 5' ENTER, which runs a command in the
+    session under test (#44)."""
+
+    def test_parses_seconds(self):
+        self.assertEqual(keys.parse_wait_step("SLEEP 5"), 5.0)
+        self.assertEqual(keys.parse_wait_step("WAIT 0.5"), 0.5)
+        self.assertEqual(keys.parse_wait_step("sleep 2"), 2.0)
+        self.assertEqual(keys.parse_wait_step("wait\t1.25"), 1.25)  # any whitespace
+
+    def test_non_wait_steps_return_none(self):
+        for step in ("TAB", "ENTER", "SLEEPY", "WAITING 5", "SLEEP", "WAIT"):
+            with self.subTest(step=step):
+                self.assertIsNone(keys.parse_wait_step(step))
+
+    def test_unusable_durations_raise(self):
+        # A malformed wait step must be a clean usage error, never
+        # literal text typed into the target.
+        for step in ("SLEEP abc", "WAIT -1", "SLEEP nan", "SLEEP inf",
+                     "WAIT 5, five"):
+            with self.subTest(step=step):
+                with self.assertRaises(ValueError):
+                    keys.parse_wait_step(step)
+
+
+class ParseWaitForTests(unittest.TestCase):
+    """WAIT-FOR:<pattern>: pace on the target's output instead of a
+    fixed delay (#46). Matched against the ANSI-stripped stream by
+    default -- matching raw bytes is where a line editor redrawing
+    mid-marker interleaves escapes into the pattern."""
+
+    def test_substring_pattern(self):
+        p = keys.parse_wait_for_step("WAIT-FOR:ready")
+        self.assertTrue(p.search(b"startup noise... ready now"))
+        self.assertIsNone(p.search(b"never mind"))
+
+    def test_regex_pattern_when_wrapped_in_slashes(self):
+        p = keys.parse_wait_for_step("WAIT-FOR:/MA.R?K/")
+        self.assertTrue(p.search(b"MA1RK"))   # . = 1, R? present
+        self.assertTrue(p.search(b"MARK"))    # R? absent
+        self.assertIsNone(p.search(b"MAxxK"))  # . can't span two chars
+
+    def test_slash_wrapping_is_what_selects_regex(self):
+        # Without the slashes, regex metacharacters are literal -- a
+        # pattern like '/etc/hosts' (no trailing slash) stays a substring.
+        p = keys.parse_wait_for_step("WAIT-FOR:a.b")
+        self.assertTrue(p.search(b"a.b"))
+        self.assertIsNone(p.search(b"axb"))
+
+    def test_patterns_are_bytes_over_stripped_output(self):
+        # The driver strips ANSI before matching; the pattern itself is
+        # compiled against bytes to match that stream directly.
+        p = keys.parse_wait_for_step("WAIT-FOR:/r[e]ady/")
+        self.assertTrue(p.search(b"\x1b[31mready\x1b[0m"))
+
+    def test_empty_pattern_raises(self):
+        with self.assertRaises(ValueError):
+            keys.parse_wait_for_step("WAIT-FOR:")
+
+    def test_invalid_regex_raises(self):
+        with self.assertRaises(ValueError):
+            keys.parse_wait_for_step("WAIT-FOR:/[/")
+
+    def test_non_wait_for_steps_return_none(self):
+        for step in ("WAIT-FOR", "TAB", "SLEEP 5", "WAIT 1"):
+            with self.subTest(step=step):
+                self.assertIsNone(keys.parse_wait_for_step(step))
+
+
 class PrintKeyListTests(unittest.TestCase):
     """print_key_list() backs --list-keys (see VersionAndListKeysTests
     for the CLI-level check); these test its formatting logic directly."""
@@ -151,6 +280,14 @@ class PrintKeyListTests(unittest.TestCase):
         for name in keys.SPECIAL_KEYS:
             with self.subTest(name=name):
                 self.assertIn(name, out)
+
+    def test_lists_the_non_key_step_forms_too(self):
+        # --list-keys is the one-screen step-vocabulary reference; the
+        # RAW:/SLEEP/WAIT-FOR forms belong on it, not just in --help.
+        out = self._output()
+        for form in ("RAW:", "SLEEP <seconds>", "WAIT-FOR:<pattern>"):
+            with self.subTest(form=form):
+                self.assertIn(form, out)
 
 
 class NearMissWarningTests(unittest.TestCase):
@@ -185,6 +322,16 @@ class NearMissWarningTests(unittest.TestCase):
         # The whole point: a near-miss still goes out as literal text,
         # unchanged, same as any other non-matching step.
         self.assertEqual(keys.encode_step("CTRLC"), b"CTRLC")
+
+    def test_does_not_warn_on_the_other_step_forms(self):
+        # RAW:/SLEEP/WAIT-FOR steps are their own exact-match vocabulary --
+        # 'RAW:CR' is three-quarters CR by difflib's math and is not a
+        # typo of it, and a malformed SLEEP/WAIT-FOR gets a proper usage
+        # error at validation time instead.
+        for step in ("RAW:CR", "RAW:TAB", "SLEEP 5", "wait 1",
+                     "WAIT-FOR:ENTER", "SLEEP abc"):
+            with self.subTest(step=step):
+                self.assertEqual(self._warns(step), "")
 
 
 class LoadStepsTests(unittest.TestCase):
@@ -339,6 +486,28 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertIn(b"--env:", result.stderr)
         self.assertNotIn(b"Traceback", result.stderr)
 
+    def test_malformed_wait_step_is_a_clean_usage_error(self):
+        # 'SLEEP abc' must never fall through to being typed as literal
+        # text into the target -- that's a silent footgun.
+        result = run_cli(["--cmd", "cat", "SLEEP abc", "ENTER"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"wait step", result.stderr)
+        self.assertIn(b"SLEEP abc", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_malformed_wait_for_steps_are_clean_usage_errors(self):
+        for step in ("WAIT-FOR:", "WAIT-FOR:/[/"):
+            with self.subTest(step=step):
+                result = run_cli(["--cmd", "cat", step])
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"WAIT-FOR step", result.stderr)
+                self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_non_numeric_wait_for_timeout_is_a_usage_error(self):
+        result = run_cli(["--cmd", "cat", "--wait-for-timeout", "abc", "x"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--wait-for-timeout", result.stderr)
+
 
 class VersionAndListKeysTests(unittest.TestCase):
     def test_version_prints_and_exits_zero(self):
@@ -447,6 +616,84 @@ class RunDirectTests(unittest.TestCase):
             )
         after = self._open_fd_count()
         self.assertEqual(before, after)
+
+
+class DriverStepTests(unittest.TestCase):
+    """Direct tests of the driver-side step forms (#44 SLEEP, #46
+    WAIT-FOR) and the query responder (#43) -- real pty, real
+    subprocess, called directly so the CLI layer's byte-exact checks
+    below stay focused on end-to-end behavior."""
+
+    def test_sleep_step_sends_nothing(self):
+        # A plain `cat` echoes every byte written to it and produces
+        # nothing on its own -- so an empty capture is direct evidence
+        # the SLEEP step wrote no bytes, which is the whole point of a
+        # driver-side wait (#44).
+        out = driver.run(["cat"], ["SLEEP 0.3"], 0.1, 0.1, 0.1)
+        self.assertEqual(out, b"")
+
+    def test_sleep_step_waits_the_full_duration(self):
+        # `late` is printed ~1s after startup; a 2s SLEEP must cover it,
+        # a 0.2s one must not (5x margins each way, bash spawn included).
+        argv = ["bash", "-c", "(sleep 1; echo late) & cat"]
+        out = driver.run(argv, ["SLEEP 2"], 0.1, 0.1, 0.2)
+        self.assertIn(b"late", out)
+        out = driver.run(argv, ["WAIT 0.2"], 0.1, 0.1, 0.2)
+        self.assertNotIn(b"late", out)
+
+    def test_wait_for_step_paces_on_target_output(self):
+        # The marker only exists in the target's output -- nothing typed
+        # beforehand contains it -- so a match proves the step kept
+        # draining until the target actually said it (#46).
+        argv = ["bash", "-c", "sleep 0.5; echo READY-9; cat"]
+        out = driver.run(
+            argv, ["WAIT-FOR:READY-9", "hi", "ENTER"], 0.2, 0.2, 0.2,
+            wait_for_timeout=5,
+        )
+        self.assertIn(b"READY-9", out)
+        self.assertIn(b"hi", out)
+
+    def test_wait_for_step_matches_stripped_output(self):
+        # Raw stream has \x1b[31m between MA and RK; the stripped one
+        # doesn't -- the default match must be against the stripped one.
+        # run() returns the raw capture; strip it the same way the CLI
+        # does before asserting on the match.
+        argv = ["bash", "-c", "printf 'MA\\033[31mRK\\n'; cat"]
+        out = driver.run(argv, ["WAIT-FOR:MARK", "x"], 0.2, 0.2, 0.2)
+        self.assertIn(b"MARK", ansi.ANSI.sub(b"", out))
+
+    def test_wait_for_step_timeout_fails_loudly(self):
+        # A pattern that never arrives must raise, not silently become a
+        # slow no-op (#46) -- the CLI turns this into exit 1 + a message
+        # with the pattern and the last output seen.
+        with self.assertRaises(driver.WaitForTimeout):
+            driver.run(
+                ["cat"], ["WAIT-FOR:tp-never-arrives"], 0.1, 0.1, 0.1,
+                wait_for_timeout=0.5,
+            )
+
+    def test_wait_for_step_matches_output_seen_before_the_step(self):
+        # Matching is against everything accumulated so far (connect-wait
+        # and earlier steps included) -- a marker that already arrived
+        # must not hang waiting for a repeat.
+        argv = ["bash", "-c", "echo early-bird; cat"]
+        out = driver.run(argv, ["WAIT-FOR:early-bird"], 0.1, 0.1, 0.5)
+        self.assertIn(b"early-bird", out)
+
+    def test_answer_queries_replies_once_per_query(self):
+        # The target sends a DA2 query; the reply is written into the
+        # target's input and comes back via the pty's own echo -- present
+        # exactly once with the flag, absent without it. Real pty, real
+        # responder, no mocks. The echo shows the reply's ESC byte the
+        # way a cooked pty's ECHOCTL renders any control char: as the
+        # two literal characters ^[, not as \x1b.
+        argv = ["bash", "-c", "printf '\\033[>c'; cat"]
+        out = driver.run(
+            argv, ["x"], 0.3, 0.2, 0.3, answer_queries=True,
+        )
+        self.assertEqual(out.count(b"^[[>85;3800;0c"), 1)
+        out = driver.run(argv, ["x"], 0.3, 0.2, 0.3)
+        self.assertNotIn(b"^[[>85;3800;0c", out)
 
 
 class CliIntegrationTests(unittest.TestCase):
@@ -631,6 +878,108 @@ class CliIntegrationTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
         )
         self.assertEqual(result.stdout, b"hi\r\nhi\r\n\n")
+
+    def test_raw_step_delivers_real_escape_bytes_to_the_target(self):
+        # Byte-exact proof, not just echo: stty -icanon so od can read
+        # the unwritten-newline sequence straight off the pty, then od
+        # shows exactly what arrived -- 1b 5b 49 = \e[I. The pty's own
+        # echo of the same write shows up as ^[[I (ECHOCTL renders the
+        # real ESC byte as literal two-char ^[); the literal text
+        # '\e[I' would echo as four plain characters instead.
+        cmd = "bash -c 'stty -icanon; od -An -tx1 -N3; cat'"
+        result = run_cli(["--cmd", cmd, "--raw", *FAST, r"RAW:\e[I"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"^[[I", result.stdout)  # the echo
+        self.assertNotIn(b"\\e[I", result.stdout)  # not sent as text
+        self.assertIn(b"1b 5b 49", result.stdout)  # what cat received
+
+    def test_raw_step_output_strips_like_any_escape_sequence(self):
+        # Through the default ANSI strip, the sequence itself is gone --
+        # only the ECHOCTL-rendered echo of it comes back.
+        result = run_cli(["--cmd", "cat", *FAST, r"RAW:\e[I"])
+        self.assertEqual(result.stdout, b"^[[I\n")
+
+    def test_sleep_step_changes_nothing_about_the_capture(self):
+        # End-to-end sanity: a driver-side wait between steps is
+        # invisible on stdout -- no bytes sent, nothing to echo.
+        result = run_cli(["--cmd", "cat", *FAST, "SLEEP 0.3", "hi", "ENTER"])
+        self.assertEqual(result.stdout, b"hi\r\nhi\r\n\n")
+
+    def test_wait_for_step_paces_until_the_target_outputs(self):
+        # The marker is printed by the target ~0.4s in -- and, unlike the
+        # direct driver test above, the earlier steps' own echoes exist
+        # here, so the pattern deliberately contains no substring of any
+        # typed step text.
+        cmd = "bash -c 'sleep 0.4; echo tp-waitfor-ok; cat'"
+        result = run_cli(
+            ["--cmd", cmd, "--connect-wait", "0.2", "--step-delay", "0.3",
+             "--settle", "0.3", "--wait-for-timeout", "5",
+             "WAIT-FOR:tp-waitfor-ok", "hi", "ENTER"],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"tp-waitfor-ok", result.stdout)
+        self.assertIn(b"hi", result.stdout)
+
+    def test_wait_for_step_timeout_exits_1_with_pattern_and_last_output(self):
+        # The "fails loudly, not a slow no-op" requirement (#46): exit 1,
+        # one-line stderr message naming the step and what was last seen,
+        # and no stdout capture printed for a failed run.
+        result = run_cli(
+            ["--cmd", "cat", "--connect-wait", "0.2", "--step-delay", "0.2",
+             "--settle", "0.2", "--wait-for-timeout", "0.5",
+             "WAIT-FOR:tp-never-arrives"],
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"WAIT-FOR step", result.stderr)
+        self.assertIn(b"tp-never-arrives", result.stderr)
+        self.assertIn(b"last output seen", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertEqual(result.stdout, b"")
+
+    def test_wait_for_step_can_wait_for_a_regex(self):
+        # The form that survives a line editor redrawing mid-marker
+        # (#46's actual motivating case): the pattern tolerates characters
+        # between the literal ones.
+        cmd = "bash -c 'echo tp-ma-rk-end; cat'"
+        result = run_cli(
+            ["--cmd", cmd, *FAST, "--wait-for-timeout", "5",
+             "WAIT-FOR:/tp-ma.?rk/"],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"tp-ma-rk-end", result.stdout)
+
+    def test_answer_queries_flag_answers_a_capability_probe(self):
+        # The probe (\e[>c) itself survives ANSI stripping (its '>' is
+        # outside the strip regex's parameter charset, per NOTES.md). The
+        # canned DA2 reply is written into the target's input and comes
+        # back through the pty's own echo -- with the ESC byte rendered
+        # ECHOCTL-style as the literal two characters ^[.
+        cmd = 'bash -c "printf \'\\033[>c\'; cat"'
+        result = run_cli(["--cmd", cmd, "--answer-queries", *FAST, "x"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"^[[>85;3800;0c", result.stdout)
+        result = run_cli(["--cmd", cmd, *FAST, "x"])
+        self.assertNotIn(b"^[[>85;3800;0c", result.stdout)
+
+    def test_bel_note_printed_to_stderr_once_per_run(self):
+        # Issue #47: BEL renders as nothing in both stripped and raw
+        # output; the advisory note is what makes a bell visible in a
+        # capture. stdout keeps the BEL itself (stripping deliberately
+        # leaves it, NOTES.md's "byte that looks empty" gotcha) but is
+        # otherwise unchanged.
+        cmd = 'bash -c "printf \'a\\007b\'; cat"'
+        result = run_cli(["--cmd", cmd, *FAST, "x"])
+        self.assertEqual(result.stdout, b"a\x07bx\n")
+        self.assertIn(
+            b"note: 1 BEL (0x07) byte received from the target",
+            result.stderr,
+        )
+        result = run_cli(["--cmd", cmd, "--raw", *FAST, "x"])
+        self.assertIn(b"1 BEL (0x07) byte", result.stderr)
+
+    def test_no_bel_note_when_target_never_bells(self):
+        result = run_cli(["--cmd", "cat", *FAST, "hi", "ENTER"])
+        self.assertNotIn(b"BEL", result.stderr)
 
 
 class CliTimingTests(unittest.TestCase):
