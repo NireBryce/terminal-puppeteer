@@ -13,6 +13,31 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.3: the pty has a real window size (24x80); tracker + CI hygiene
+
+- The pty reported **0 0** to anything that read the tty directly —
+  `pty.openpty()` leaves the window size at zero. Interactive bash
+  masked it with its own 80x24 fallback (`$COLUMNS` looked fine), but
+  `stty size`, ncurses, and fish's line editor (its cursor math ran on
+  a zero-width line, seen during the #37 chase) all saw a
+  zero-sized terminal no human has ever sat in front of. `run()` now
+  sets `TIOCSWINSZ` 24 rows × 80 cols right after `openpty()`, so the
+  target's view matches a fresh real terminal.
+- Test asserts `stty size` → `24 80` (stty is coreutils, present in
+  the nix sandbox where procps's `ps` wasn't — same lesson as #49).
+- Tracker hygiene: #43–#47 and #36 were still open — #48's body used
+  bold labels, not closing keywords, so nothing auto-closed. Closed
+  with a pointer to #48 each.
+- CI hygiene: `actions/checkout` v4 → v5 in both workflows, clearing
+  the Node 20 deprecation annotation GitHub already force-runs on
+  Node 24.
+- Docs: README and man CAVEATS mention the real terminal size (man
+  CAVEATS also de-staled — its "the tool exits 0 even if the target
+  died" sentence predated 0.3.2's loud failure). 0.3.2 → 0.3.3
+  (pyproject, script version, man `.TH`).
+
+---
+
 ## 2026-09-07 — 0.3.2: a target that dies with steps un-sent fails loudly
 
 - The last #37 loose thread: the tool used to exit 0 even when the

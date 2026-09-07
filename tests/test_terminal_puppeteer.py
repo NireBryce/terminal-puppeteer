@@ -763,6 +763,16 @@ class DriverStepTests(unittest.TestCase):
         )
         self.assertIn(b"done-130", out)
 
+    def test_target_gets_a_real_window_size(self):
+        # A real terminal hands the target a size (24 rows, 80 cols);
+        # pty.openpty() alone leaves the tty at 0x0, which bash's own
+        # 80x24 fallback masks for $COLUMNS but stty -- and anything
+        # reading the tty directly -- sees. Surfaced during the #37
+        # chase (fish's line editor ran its cursor math on a
+        # zero-width tty).
+        out = driver.run(["bash", "-c", "stty size; cat"], ["x"], 0.5, 0.5, 0.5)
+        self.assertEqual(out.split(b"\r\n", 1)[0], b"24 80")
+
     def test_target_dying_with_steps_remaining_fails_loudly(self):
         # The #37 masquerade's fix: steps sent to a dead target raise,
         # with the exit status, the count sent/remaining, and the

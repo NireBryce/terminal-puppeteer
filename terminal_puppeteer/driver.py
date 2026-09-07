@@ -12,6 +12,7 @@ import pty
 import re
 import select
 import signal
+import struct
 import subprocess
 import sys
 import termios
@@ -166,6 +167,14 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
     # mirror the POSIX API's traditional terms; this project
     # deliberately does not carry them.
     controller, target = pty.openpty()
+    # A fresh real terminal hands the target a window size (xterm's 80x24
+    # convention); pty.openpty() leaves the tty at 0x0. Some targets paper
+    # over it (interactive bash falls back to its own 80x24 default), but
+    # anything that reads the tty directly -- stty, ncurses, fish's line
+    # editor -- sees zero columns and behaves like no other terminal
+    # would (surfaced during the #37 chase: fish's cursor math ran on a
+    # zero-width line).
+    fcntl.ioctl(target, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
     try:
         proc = subprocess.Popen(
             argv, stdin=target, stdout=target, stderr=target, close_fds=True,
