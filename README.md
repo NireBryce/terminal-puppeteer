@@ -105,7 +105,10 @@ it under a pty, nothing bash-specific anywhere in this tool. `--cmd 'zsh
 way `--cmd 'bash -i'` does. The target runs in its own session with the
 pty as its controlling terminal, so job control works like a real
 terminal: `CTRL-C` delivers SIGINT to the foreground job, CTRL-Z/`fg`
-work, and interactive shells start without job-control warnings. (`zsh
+work, and interactive shells start without job-control warnings. The
+pty also has a real terminal size (24 rows × 80 columns), so `stty`,
+`$COLUMNS`/`$LINES`, and size-aware rendering match a fresh terminal
+instead of a zero-sized one. (`zsh
 -i` verified directly; see NOTES.md's live-redraw gotcha for what its
 captures look like. `fish` verified on real hardware too —
 [issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37)
