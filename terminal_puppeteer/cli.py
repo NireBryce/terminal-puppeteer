@@ -1,4 +1,4 @@
-"""Let an LLM agent drive a real interactive program through a pty.
+r"""Let an LLM agent drive a real interactive program through a pty.
 
 For an agent debugging a terminal program: you have no real terminal of
 your own, only tool calls that run a command and get back its output once
@@ -64,6 +64,34 @@ intended. `--steps-file` reads one step per line instead (blank lines
 skipped, `#`-prefixed lines are comments, `-` reads from stdin) -- useful
 once a repro grows past what's comfortable as shell arguments.
 
+Three more step forms cover what the key vocabulary can't express:
+
+  RAW:<escapes>      bytes through a bind/readline-style escape parser --
+                     'RAW:\e[I' sends the focus-in sequence \e[I as ONE
+                     write. An ESC step followed by '[I' text is two
+                     writes, and the gap between them gives the target's
+                     escape-sequence parser a window to time out and
+                     discard the partial sequence. Understands \e, \C-x,
+                     \xHH, \a \b \t \n \v \f \r, \\; anything else stays
+                     literal.
+
+  SLEEP <seconds>    a driver-side pause: sends nothing, just keeps
+                     draining for N seconds. Unlike a target-side
+                     'sleep 5' ENTER, it puts nothing in the session
+                     under test -- no history entry, no PROMPT_COMMAND/
+                     precmd hooks, no transcript noise, and it works for
+                     non-shell targets.
+
+  WAIT-FOR:<pattern> drain until the ANSI-stripped output accumulated so
+                     far matches -- a literal substring, or a regex when
+                     wrapped in /.../. Paces on the target's actual
+                     output instead of a duration somebody measured once
+                     ('WAIT-FOR:/===.?.MARK.?.===/' survives a line
+                     editor redrawing mid-marker; the literal form does
+                     not). Fails the run with exit 1 and the last output
+                     seen on stderr if nothing matches within
+                     --wait-for-timeout.
+
 No step ever gets an implicit trailing newline -- unlike a real line
 editor, this does not know a "command" is finished until an ENTER step
 says so. That is deliberate: it is what lets a step be a bare TAB or a
@@ -72,6 +100,12 @@ SIGKILL if it doesn't go) -- nothing is typed to close it, since a
 "graceful quit" keystroke isn't the same across every target; include an
 explicit ENTER/CTRL-D/'exit' step of your own if a clean logout matters
 for a given repro.
+
+One advisory note lands on stderr after a run: if any BEL (\x07) bytes
+came back from the target -- invisible in both stripped and raw output,
+but the standard "unbound key"/alert signal a whole class of bugs
+expresses itself as -- the count is printed, so a bell is legible in a
+capture instead of silent.
 """
 import argparse
 import os
@@ -80,8 +114,8 @@ import sys
 
 from ._version import __version__
 from .ansi import ANSI
-from .driver import run
-from .keys import print_key_list, warn_if_near_miss
+from .driver import WaitForTimeout, run
+from .keys import parse_wait_for_step, parse_wait_step, print_key_list, warn_if_near_miss
 
 
 def load_steps(args):
@@ -123,6 +157,8 @@ def main():
     p.add_argument('--settle', type=float, default=1.5, help='extra seconds to wait after the last step (default: 1.5)')
     p.add_argument('--connect-wait', type=float, default=3.0, help='seconds to wait for a banner/prompt before the first step (default: 3.0)')
     p.add_argument('--raw', action='store_true', help='print output with ANSI escape sequences intact instead of stripped')
+    p.add_argument('--answer-queries', action='store_true', help="answer terminal capability queries (\\e[>c, \\e[6n, ...) with canned 'normal terminal' replies -- a target that probes-then-fallbacks can behave differently with no reply, so repros silently diverge from a real terminal (default: off, queries go unanswered)")
+    p.add_argument('--wait-for-timeout', type=float, default=10.0, metavar='SECONDS', help='how long a WAIT-FOR step may wait for its pattern before failing the run (default: 10)')
     p.add_argument('--ssh-arg', dest='ssh_args', action='append', default=[], help='extra arg to pass through to ssh, only with --ssh (repeatable)')
     p.add_argument('--env', dest='env_vars', action='append', default=[], metavar='KEY=VALUE', help="extra environment variable for the target process (repeatable) -- e.g. --env TERM=dumb, set before the target starts rather than raced by an early step")
     p.add_argument('-v', '--verbose', action='store_true', help='print each step to stderr as it is sent')
@@ -162,20 +198,55 @@ def main():
     if not steps:
         p.error('no steps given (positionally or via --steps-file)')
     for step in steps:
+        # Malformed SLEEP/WAIT-FOR steps are usage errors, not literal
+        # text: typing 'SLEEP abc' into the target would be a silent
+        # footgun. Well-formed ones pass through untouched (the driver
+        # re-parses them, same pattern as encode_step).
+        for parse, what in ((parse_wait_step, 'wait step'),
+                            (parse_wait_for_step, 'WAIT-FOR step')):
+            try:
+                parse(step)
+            except ValueError as e:
+                p.error(f'{what} {step!r}: {e}')
         warn_if_near_miss(step)
 
     try:
         out = run(
             argv, steps, args.step_delay, args.settle, args.connect_wait,
-            env=env, verbose=args.verbose,
+            env=env, verbose=args.verbose, answer_queries=args.answer_queries,
+            wait_for_timeout=args.wait_for_timeout,
         )
     except OSError as e:
         # argv[0] not found, not executable, etc. -- a real runtime failure,
         # not a usage mistake, so no usage block (p.error()'s always-exit-2
         # style doesn't fit here): just the message, exit 1. See issue #21.
         p.exit(1, f'{p.prog}: error: could not start {argv[0]!r}: {e.strerror or e}\n')
+    except WaitForTimeout as e:
+        # Same runtime-failure shape: a pattern that never arrived is a
+        # failed repro, not a usage mistake -- exit 1, one-line message
+        # saying what was waited for and what was last seen (issue #46),
+        # no usage block.
+        p.exit(1, f'{p.prog}: error: {e}\n')
     if not args.raw:
         out = ANSI.sub(b'', out)
+    # Counted on the stripped stream on purpose: a \x07 terminating an OSC
+    # sequence (\x1b]0;title\x07) is part of that sequence, not a bell --
+    # the standalone BELs this counts are the ones that survive stripping
+    # untouched.
+    bels = out.count(b'\x07')
+    if bels:
+        # BEL is not part of an ANSI escape sequence, so stripping leaves
+        # it -- and it renders as nothing, --raw included. Advisory only
+        # (same shape as the near-miss warning): programs bell for reasons
+        # a given repro may not care about, but a bell is the visible
+        # symptom of a whole class of unbound-key/alert behavior, and
+        # without this line a capture of a bell-heavy session looks
+        # identical to a bell-free one. See issue #47.
+        print(
+            f'{p.prog}: note: {bels} BEL (0x07) byte'
+            f'{"s" if bels != 1 else ""} received from the target',
+            file=sys.stderr,
+        )
     sys.stdout.buffer.write(out)
     sys.stdout.buffer.write(b'\n')
 

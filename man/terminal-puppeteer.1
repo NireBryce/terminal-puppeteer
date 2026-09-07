@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-08-24" "terminal-puppeteer 0.2.0" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.0" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -10,7 +10,9 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-step\-delay " " \fISECONDS\fR]
 .RB [ \-\-settle " " \fISECONDS\fR]
 .RB [ \-\-connect\-wait " " \fISECONDS\fR]
+.RB [ \-\-wait\-for\-timeout " " \fISECONDS\fR]
 .RB [ \-\-raw ]
+.RB [ \-\-answer\-queries ]
 .RB [ \-v ]
 .RI [ STEP " ...]"
 .br
@@ -21,7 +23,9 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-step\-delay " " \fISECONDS\fR]
 .RB [ \-\-settle " " \fISECONDS\fR]
 .RB [ \-\-connect\-wait " " \fISECONDS\fR]
+.RB [ \-\-wait\-for\-timeout " " \fISECONDS\fR]
 .RB [ \-\-raw ]
+.RB [ \-\-answer\-queries ]
 .RB [ \-v ]
 .RI [ STEP " ...]"
 .br
@@ -126,6 +130,45 @@ same as always \-\- but if it's close to one (a missing hyphen, a typo)
 a warning is printed to standard error saying so. Advisory only: what
 gets sent is unchanged either way.
 .PP
+Three more step forms cover what named keys can't express:
+.TP
+.BI RAW: escapes
+Bytes through a bind/readline-style escape parser, sent as ONE write:
+.B "RAW:\ee[I"
+sends the focus-in sequence \ee[I as a single step. An
+.B ESC
+step followed by
+.B "'[I'"
+text is two writes, and the gap between them gives the target's
+escape-sequence parser a window to time out and discard the partial
+sequence. Understands \ee (ESC), \eC\-x (any letter, plus
+@ [ \e ] ^ _), \ex\fIHH\fR, \ea \eb \et \en \ev \ef \er, and
+\e\e for a literal backslash; anything else stays literal. The
+explicit prefix is the point \-\- a plain step was never supposed to
+grow escape syntax, so text that merely starts with a backslash keeps
+meaning what it always meant.
+.TP
+.IR SLEEP " seconds" ", " WAIT " seconds"
+A driver-side pause: sends nothing, just keeps draining for N seconds.
+Unlike a target-side \fB'sleep 5' ENTER\fR workaround, it puts nothing
+in the session under test \-\- no history entry, no
+PROMPT_COMMAND/precmd hooks firing mid-observation, no transcript noise
+\-\- and it works for non-shell targets.
+.TP
+.BI WAIT-FOR: pattern
+Drain until the ANSI-stripped output accumulated so far matches: a
+literal substring, or a regex when wrapped in \fB/.../\fR. Paces on the
+target's actual output instead of a duration somebody measured once,
+and the regex form survives a line editor redrawing mid-marker
+(cursor-positioning escapes landing between the characters of the thing
+being waited for). A pattern that never arrives fails the run \-\- exit
+1, one stderr line naming the step and the last output seen \-\- not a
+slow no-op; the budget is
+.B \-\-wait\-for\-timeout
+(default 10s). Matching is against the transcript, which includes the
+echo of your own typing \-\- wait for a marker that only exists in the
+target's output, not one you also typed.
+.PP
 .B No step ever gets an implicit trailing newline.
 That is what lets a step be a bare \fBTAB\fR or a partial line someone's
 about to keep typing \-\- but it also means a command meant to actually
@@ -194,6 +237,22 @@ Seconds to wait for a banner or shell prompt before the first step
 Print output with ANSI escape sequences intact, instead of the default
 of stripping them.
 .TP
+.B \-\-answer\-queries
+Answer terminal capability queries (\ee[>c, \ee[6n, ...) with canned
+"normal terminal" replies while the run is happening. A bare pty
+answers nothing; usually fine, but a target that probes-then-fallbacks
+can take a genuinely different code path with no reply, so a repro can
+silently fail to reproduce behavior a real terminal shows. Opt-in,
+because the replies are canned lies about terminal capabilities \-\- a
+target whose behavior legitimately differs by reported capability will
+be misled. Not a terminal emulator: it answers just enough for a
+probe-then-fallback target to take its normal path. See
+.BR CAVEATS .
+.TP
+.BI \-\-wait\-for\-timeout " SECONDS"
+How long a \fBWAIT\-FOR:\fR step may wait for its pattern before
+failing the run (default: \fB10\fR).
+.TP
 .BR \-v ", " \-\-verbose
 Print each step to standard error as it is sent (\fB>> TAB\fR), for
 watching a long or slow run happen live instead of waiting for the whole
@@ -219,6 +278,11 @@ Output is everything the pty produced, ANSI escape sequences stripped by
 default (\fB\-\-raw\fR to keep them), written to standard output followed
 by a trailing newline. Read it the way you'd read a terminal transcript:
 prompt lines and command output interleaved, in the order they arrived.
+One advisory note may join it on standard error: if any BEL (\ex07)
+bytes came back from the target \-\- invisible in both stripped and raw
+output, but the standard unbound-key/alert signal \-\- the count is
+printed after the run, so a bell-heavy capture doesn't look identical
+to a bell-free one.
 .SH "EXIT BEHAVIOR"
 On its way out this
 .B only ever terminates the target process
@@ -244,7 +308,12 @@ plus the usage synopsis is printed to standard error.
 .B 1
 The command named by \fB\-\-cmd\fR (or \fBssh\fR itself, for \fB\-\-ssh\fR)
 could not be started \-\- not found, not executable, or similar. A
-one-line message is printed to standard error, no usage block. Any other
+one-line message is printed to standard error, no usage block. The same
+status reports a
+.B WAIT\-FOR:
+step whose pattern never arrived within
+.BR \-\-wait\-for\-timeout :
+the message names the step and the last output seen. Any other
 unexpected error still prints a Python traceback.
 .SH EXAMPLES
 .PP
@@ -273,6 +342,18 @@ terminal-puppeteer.py \-\-ssh myhost \-\-steps\-file repro.txt
 .EE
 .RE
 .PP
+Pacing on the target's own output instead of guessed durations, and
+injecting a raw escape sequence as one write (the marker waited for
+here exists only in the target's output \-\- the echo of your own
+typing contains whatever you typed):
+.PP
+.RS
+.EX
+terminal-puppeteer.py \-\-cmd 'bash \-i' 'make' ENTER WAIT\-FOR:/BUILD (OK|FAILED)/ SLEEP 2 'echo settled' ENTER
+terminal-puppeteer.py \-\-cmd 'bash \-i' RAW:\ee[I 'echo focused?' ENTER
+.EE
+.RE
+.PP
 Defining something multi-line: write it to a file first, then source it
 as a single step, rather than typing the file's contents:
 .PP
@@ -297,7 +378,12 @@ a target sends to probe terminal capabilities (cursor position reports,
 device attribute queries) go unanswered \-\- raw, unhandled bytes sitting
 at the start of a capture against a program that probes on startup
 (ble.sh, for one) is expected, not a bug in whatever is actually being
-tested. Setting
+tested. Usually harmless, with a real exception: a target that
+probes-then-fallbacks can take a genuinely different code path with no
+reply, so a repro can silently fail to reproduce what a real terminal
+shows \-\- the opt-in
+.B \-\-answer\-queries
+flag exists for exactly that case. Setting
 .B \-\-env TERM=dumb
 avoids some of this for programs that check
 .B $TERM

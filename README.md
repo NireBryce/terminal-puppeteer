@@ -74,7 +74,11 @@ rather than generic AI-PR boilerplate.
 
 Output is everything the pty produced, ANSI escape sequences stripped by
 default (`--raw` to keep them) — read it the way you'd read a terminal
-transcript, in order, prompt lines and command output interleaved.
+transcript, in order, prompt lines and command output interleaved. One
+advisory stderr note may join it: if any BEL (`\x07`) bytes came back
+from the target — invisible in both stripped and raw output, but the
+standard unbound-key/alert signal — the count is printed after the run,
+so a bell-heavy capture doesn't look identical to a bell-free one.
 
 Full reference: `--help`, or `man ./man/terminal-puppeteer.1` (installed
 to the usual `man(1)` location if this was `pip install`ed rather than
@@ -126,7 +130,8 @@ added newline, or one of a closed set of named keys (case-insensitive):
 
 `--list-keys` prints this same table (computed from the same table the
 tool itself uses, not transcribed separately) and exits — the exact
-bytes without a trip back to this file. `CTRL-`*letter* isn't a fixed
+bytes without a trip back to this file, plus the `RAW:`/`SLEEP`/
+`WAIT-FOR` forms below. `CTRL-`*letter* isn't a fixed
 list: any letter A–Z works, not just the handful (`CTRL-C`/`CTRL-D`)
 that used to be hardcoded — `CTRL-U`, `CTRL-L`, `CTRL-W`, `CTRL-A` all
 work the same way.
@@ -136,6 +141,41 @@ same as ever — but if it's *close* to one (`CTRLC` missing its hyphen,
 `ENTR` a typo) a warning goes to stderr saying so. It's advisory only:
 the step still goes out literally either way, this just flags the case
 that's more likely a mistake than intended text.
+
+Three more step forms cover what named keys can't express:
+
+- **`RAW:<escapes>`** — bytes through a `bind`-style escape parser, sent
+  as one write: `'RAW:\e[I'` sends the focus-in sequence `\e[I` as a
+  single step. An `ESC` step followed by `'[I'` text is two writes, and
+  the gap between them gives the target's escape-sequence parser a
+  window to time out and discard the partial sequence (ble.sh's decoder
+  does exactly that). Understands `\e`, `\C-x` (any letter, plus
+  `@[\]^_`), `\xHH`, `\a \b \t \n \v \f \r`, `\\`; anything else stays
+  literal. The explicit prefix is the point — a plain step was never
+  supposed to grow escape syntax, so text that merely starts with a
+  backslash keeps meaning what it always meant.
+- **`SLEEP <seconds>`** (or `WAIT <seconds>`) — a driver-side pause:
+  sends nothing, just keeps draining for N seconds. Unlike a
+  target-side `'sleep 5' ENTER` workaround, it puts nothing in the
+  session under test — no history entry, no `PROMPT_COMMAND`/`precmd`
+  hooks firing mid-observation, no transcript noise — and it works for
+  non-shell targets. `--step-delay` retimes every step; this retimes
+  one.
+- **`WAIT-FOR:<pattern>`** — drain until the ANSI-stripped output
+  accumulated so far matches: a literal substring, or a regex when
+  wrapped in `/.../`. Paces on the target's actual output instead of a
+  duration somebody measured once, and the regex form is what survives
+  a line editor redrawing mid-marker (cursor-positioning escapes
+  landing between the characters of the thing being waited for —
+  `'WAIT-FOR:/===.?.MARK.?.===/'` still matches where the literal never
+  appears contiguously). Matching the *stripped* stream is deliberate:
+  matching raw bytes is where the interleaving problem lives. A pattern
+  that never arrives fails the run — exit 1, one stderr line naming the
+  step and the last output seen — not a slow no-op; the budget is
+  `--wait-for-timeout` (default 10s). One honest caveat: matching is
+  against the transcript, which includes the echo of your own typing —
+  wait for a marker that only exists in the target's *output*, not one
+  you also typed.
 
 **No step ever gets an implicit trailing newline.** That's what lets a step
 be a bare `TAB` or a partial line someone's about to keep typing — but it
@@ -174,7 +214,10 @@ responds fast — the defaults are there for the slow case.
 Raise `--step-delay`/`--settle` when the output looks truncated or the
 next step's echo appears mashed into the previous step's output; that's
 usually the delay running out before the target actually finished
-responding, not a real ordering bug.
+responding, not a real ordering bug. The three forms compose: a step
+list reads `'setup' ENTER SLEEP 5 'the probe' ENTER
+WAIT-FOR:the-answer` — `SLEEP` for settle-time pacing, `WAIT-FOR` for
+reactive pacing, `--step-delay` for typing cadence.
 
 ## Exit behavior
 
@@ -191,7 +234,22 @@ your own step list if a clean logout matters for what you're checking.
 `--verbose`/`-v` prints each step to stderr as it's sent (`>> TAB`), for
 watching a long or slow multi-step run happen live instead of waiting
 for the whole transcript to print at the end — output on stdout is
-unaffected either way. `--version` prints the version and exits.
+unaffected either way.
+
+`--answer-queries` answers terminal capability queries (`\e[>c`, `\e[6n`,
+...) with canned "normal terminal" replies while the run is happening. A
+bare pty answers nothing; that's usually fine, but a target that
+probes-then-fallbacks can take a genuinely different code path with no
+reply — so a repro can silently fail to reproduce behavior a real
+terminal shows, and the failure looks like a bug in the target. Opt-in,
+because the replies are canned lies: a target whose behavior legitimately
+differs by reported capability will be misled. Default stays
+exactly-as-before (queries go unanswered; see NOTES.md's gotcha for what
+that looks like in a capture). This is not a terminal emulator — it
+answers just enough for a probe-then-fallback target to take its normal
+path.
+
+`--version` prints the version and exits.
 
 ## See also
 
