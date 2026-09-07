@@ -508,6 +508,15 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(b"--wait-for-timeout", result.stderr)
 
+    def test_zero_or_negative_rows_cols_are_usage_errors(self):
+        # A 0x0 tty is exactly the bug the window-size defaults exist to
+        # fix -- the flags may override the size, not un-set it.
+        for flag in ("--rows", "--cols"):
+            with self.subTest(flag=flag):
+                result = run_cli(["--cmd", "cat", flag, "0", "x"])
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(flag.encode(), result.stderr)
+
 
 class VersionAndListKeysTests(unittest.TestCase):
     def test_version_prints_and_exits_zero(self):
@@ -773,6 +782,31 @@ class DriverStepTests(unittest.TestCase):
         out = driver.run(["bash", "-c", "stty size; cat"], ["x"], 0.5, 0.5, 0.5)
         self.assertEqual(out.split(b"\r\n", 1)[0], b"24 80")
 
+    def test_rows_and_cols_flags_reach_the_tty(self):
+        out = driver.run(
+            ["bash", "-c", "stty size; cat"], ["x"], 0.5, 0.5, 0.5,
+            rows=40, cols=120,
+        )
+        self.assertEqual(out.split(b"\r\n", 1)[0], b"40 120")
+
+    def test_wait_for_fails_fast_when_the_target_dies_mid_wait(self):
+        # A dead target can never produce the pattern, so burning the
+        # whole WAIT-FOR budget would be a slow no-op with a misleading
+        # "no match" message -- the death is the real failure and it
+        # surfaces immediately, naming the status and the step. The
+        # target must outlive the step's start (connect-wait) for the
+        # mid-wait path to be the one that fires; a target already dead
+        # before the step is run()'s own check.
+        with self.assertRaises(driver.TargetDied) as cm:
+            driver.run(
+                ["bash", "-c", "sleep 1.5; exit 3"],
+                ["WAIT-FOR:tp-never-arrives"],
+                0.3, 0.2, 0.3, wait_for_timeout=15,
+            )
+        self.assertIn("status 3", str(cm.exception))
+        self.assertIn("was still waiting", str(cm.exception))
+        self.assertIn("cannot arrive", str(cm.exception))
+
     def test_target_dying_with_steps_remaining_fails_loudly(self):
         # The #37 masquerade's fix: steps sent to a dead target raise,
         # with the exit status, the count sent/remaining, and the
@@ -861,6 +895,14 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertIn(b"after 0 of 4 steps", result.stderr)
         self.assertIn(b"pty echo", result.stderr)
         self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_rows_and_cols_flags_end_to_end(self):
+        result = run_cli(
+            ["--cmd", "bash -c 'stty size; cat'", "--rows", "40",
+             "--cols", "120", *FAST, "x"],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"40 120", result.stdout)
 
     def test_step_without_enter_is_typed_but_never_submitted(self):
         # README/NOTES.md: no step gets an implicit trailing newline, so

@@ -240,8 +240,10 @@ If the target exits on its own **while steps remain to be sent** — a
 crash, an unwelcome startup, a typo'd target — the run fails loudly:
 exit 1, the partial capture still on stdout (it's the diagnostic,
 usually the target's dying words), and one stderr line naming the exit
-status or signal, how many steps were never sent, and which step would
-have been next. A target that dies *after* the last step — `exit`+`ENTER`
+status or signal and what was in progress. A death between steps names
+how many steps were never sent and which step would have been next; a
+death during a `WAIT-FOR` names the pattern that can no longer arrive.
+A target that dies *after* the last step — `exit`+`ENTER`
 as the final step, the clean-logout shape — is not an error. This check
 exists because a dead target used to be invisible: the pty echoes every
 step whether or not anything is reading them, so a target that died at
@@ -249,6 +251,12 @@ startup looked exactly like a quiet, successful run
 ([issue #37](https://github.com/NireBryce/terminal-puppeteer/issues/37)).
 
 ## Other flags
+
+`--rows`/`--cols` override the terminal size the pty reports to the
+target (default 24 × 80, a fresh terminal's — see the `--cmd` section
+for why it isn't 0×0). Useful when a repro is size-sensitive: a TUI
+that only misrenders below N columns, an editor's wrapping, a
+progress-bar width.
 
 `--verbose`/`-v` prints each step to stderr as it's sent (`>> TAB`), for
 watching a long or slow multi-step run happen live instead of waiting

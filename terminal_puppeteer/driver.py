@@ -138,14 +138,30 @@ def drain(controller, seconds, chunk=65536, answered=None):
     return out
 
 
-def wait_for(controller, seen, step, pattern, timeout, answered=None):
+def _exit_status_why(rc):
+    """Human words for a child's exit status: signal name where the
+    target was killed, plain status where it exited on its own."""
+    if rc < 0:
+        try:
+            return f'killed by signal {-rc} ({signal.Signals(-rc).name})'
+        except ValueError:
+            return f'killed by signal {-rc}'
+    return f'exited with status {rc}'
+
+
+def wait_for(controller, proc, seen, step, pattern, timeout, answered=None):
     """Drain until the ANSI-stripped output accumulated so far matches
     `pattern`, or timeout. Matching the stripped stream by default is
     the point (issue #46): matching raw bytes is where a line editor
     redrawing mid-marker puts cursor-positioning escapes between the
     characters of the thing being waited for. Stripping the whole
     accumulator each poll, not a tail: an escape sequence can straddle
-    two reads, and repro-scale output is small."""
+    two reads, and repro-scale output is small. The target dying
+    mid-wait fails fast (TargetDied) instead of burning the whole
+    budget: with its last fd closed the pattern cannot arrive any
+    more, so waiting is guaranteed futile. The pattern is re-checked
+    before the liveness test, so a marker in the target's dying output
+    burst still matches normally."""
     deadline = time.time() + timeout
     while not pattern.search(ANSI.sub(b'', seen)):
         remaining = deadline - time.time()
@@ -156,11 +172,18 @@ def wait_for(controller, seen, step, pattern, timeout, answered=None):
                 f'last output seen (ANSI-stripped): {tail!r}'
             )
         seen += drain(controller, min(DRAIN_POLL, remaining), answered=answered)
+        if proc.poll() is not None:
+            raise TargetDied(
+                f'target {_exit_status_why(proc.returncode)} while '
+                f'WAIT-FOR step {step!r} was still waiting -- the '
+                f'pattern cannot arrive any more',
+                seen,
+            )
     return seen
 
 
 def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
-        answer_queries=False, wait_for_timeout=10.0):
+        answer_queries=False, wait_for_timeout=10.0, rows=24, cols=80):
     # The two pty fds are named controller/target (our end / the spawned
     # program's end) -- the same vocabulary README.md and NOTES.md use
     # for the thing being driven. pty.openpty()'s own parameter names
@@ -173,8 +196,9 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
     # anything that reads the tty directly -- stty, ncurses, fish's line
     # editor -- sees zero columns and behaves like no other terminal
     # would (surfaced during the #37 chase: fish's cursor math ran on a
-    # zero-width line).
-    fcntl.ioctl(target, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+    # zero-width line). Override the 24x80 default with --rows/--cols.
+    fcntl.ioctl(target, termios.TIOCSWINSZ,
+                struct.pack('HHHH', rows, cols, 0, 0))
     try:
         proc = subprocess.Popen(
             argv, stdin=target, stdout=target, stderr=target, close_fds=True,
@@ -198,16 +222,9 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
                 # pty's own echo making the run LOOK like it worked
                 # (issue #37). Fail with the capture attached: it is
                 # the diagnostic, typically the target's dying words.
-                rc = proc.returncode
-                if rc < 0:
-                    try:
-                        why = f'killed by signal {-rc} ({signal.Signals(-rc).name})'
-                    except ValueError:
-                        why = f'killed by signal {-rc}'
-                else:
-                    why = f'exited with status {rc}'
                 raise TargetDied(
-                    f'target {why} after {i} of {len(steps)} steps; '
+                    f'target {_exit_status_why(proc.returncode)} after '
+                    f'{i} of {len(steps)} steps; '
                     f'{len(steps) - i} not sent, next would be {step!r} -- '
                     f'the captured output is the pty echo of your steps, '
                     f'not the target responding',
@@ -223,7 +240,7 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
                 continue
             pattern = parse_wait_for_step(step)
             if pattern is not None:
-                out = wait_for(controller, out, step, pattern,
+                out = wait_for(controller, proc, out, step, pattern,
                                wait_for_timeout, answered=answered)
                 continue
             os.write(controller, encode_step(step))
