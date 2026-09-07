@@ -399,6 +399,29 @@ class AnsiRegexTests(unittest.TestCase):
     def test_strips_osc_sequence_terminated_by_bel(self):
         self.assertEqual(ansi.ANSI.sub(b"", b"\x1b]0;window title\x07rest"), b"rest")
 
+    def test_strips_osc_sequence_terminated_by_st(self):
+        # The other legal OSC terminator (ESC \) -- used by fish's OSC
+        # 133 prompt marks, our own --answer-queries OSC 11 reply, and
+        # OSC 8 hyperlinks. Only stripping the BEL form left the whole
+        # sequence sitting in "stripped" output as visible garbage
+        # (seen directly in this project's own repro captures).
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b]0;title\x1b\\rest"), b"rest")
+
+    def test_strips_osc8_hyperlinks(self):
+        raw = b"\x1b]8;;http://example.com\x1b\\link text\x1b]8;;\x1b\\end"
+        self.assertEqual(ansi.ANSI.sub(b"", raw), b"link textend")
+
+    def test_strips_st_terminated_osc_containing_esc_like_text(self):
+        # A payload stops at the first ESC: the ST is ESC \, so a
+        # payload that already ended and a new sequence begins must not
+        # swallow past it.
+        raw = b"\x1b]0;a\x1b\\x\x1b]0;b\x1b\\y"
+        self.assertEqual(ansi.ANSI.sub(b"", raw), b"xy")
+
+    def test_leaves_unterminated_osc_untouched(self):
+        # Strip-what-is-provable policy: no terminator, no strip.
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b]0;truncated"), b"\x1b]0;truncated")
+
     def test_strips_charset_selection(self):
         self.assertEqual(ansi.ANSI.sub(b"", b"\x1b(Btext\x1b)0"), b"text")
 
@@ -520,6 +543,26 @@ class ArgparseValidationTests(unittest.TestCase):
 
 
 class VersionAndListKeysTests(unittest.TestCase):
+    def test_pyproject_and_package_version_are_in_sync(self):
+        # Both carry the version by hand (each with a "keep in sync"
+        # comment) -- this turns the comment into a check. Reads the
+        # one line straight out of pyproject.toml: stdlib tomllib needs
+        # 3.11 and the suite supports 3.9.
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+        m = re.search(r'^version = "(.*?)"', pyproject, re.M)
+        self.assertIsNotNone(m, "no version line in pyproject.toml")
+        self.assertEqual(m.group(1), cli.__version__)
+
+    def test_python_dash_m_entry_point(self):
+        # __main__.py makes `python -m terminal_puppeteer` work like
+        # the root wrapper and the installed script -- pin that.
+        result = subprocess.run(
+            [sys.executable, "-m", "terminal_puppeteer", "--version"],
+            capture_output=True, cwd=REPO_ROOT,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(cli.__version__.encode(), result.stdout)
+
     def test_version_prints_and_exits_zero(self):
         result = run_cli(["--version"])
         self.assertEqual(result.returncode, 0)
