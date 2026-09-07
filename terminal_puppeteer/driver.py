@@ -11,6 +11,7 @@ import os
 import pty
 import re
 import select
+import signal
 import subprocess
 import sys
 import termios
@@ -86,6 +87,21 @@ class WaitForTimeout(Exception):
     """A WAIT-FOR step's pattern never showed up in the output within
     its budget. Failed loudly on purpose (issue #46): a pattern that
     never arrives must not silently become a slow no-op."""
+
+
+class TargetDied(Exception):
+    """The target process exited while steps remained to be sent -- a
+    failed repro, raised instead of typing the remaining steps into a
+    pty nobody is reading (issue #37's masquerade: the pty echoes the
+    steps anyway, so a dead target looked like a quiet successful run).
+    `.output` carries the capture up to that point; it is diagnostic
+    (usually the target's own dying words), so the CLI still prints it.
+    Dying after the LAST step is the normal clean-logout shape (`'exit'
+    ENTER` as the final step) and is deliberately not an error."""
+
+    def __init__(self, message, output):
+        super().__init__(message)
+        self.output = output
 
 
 def drain(controller, seconds, chunk=65536, answered=None):
@@ -166,7 +182,28 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
     answered = {} if answer_queries else None
     try:
         out = drain(controller, connect_wait, answered=answered)
-        for step in steps:
+        for i, step in enumerate(steps):
+            if proc.poll() is not None:
+                # The target is gone but steps remain -- every one of
+                # them would land in a pty nobody is reading, with the
+                # pty's own echo making the run LOOK like it worked
+                # (issue #37). Fail with the capture attached: it is
+                # the diagnostic, typically the target's dying words.
+                rc = proc.returncode
+                if rc < 0:
+                    try:
+                        why = f'killed by signal {-rc} ({signal.Signals(-rc).name})'
+                    except ValueError:
+                        why = f'killed by signal {-rc}'
+                else:
+                    why = f'exited with status {rc}'
+                raise TargetDied(
+                    f'target {why} after {i} of {len(steps)} steps; '
+                    f'{len(steps) - i} not sent, next would be {step!r} -- '
+                    f'the captured output is the pty echo of your steps, '
+                    f'not the target responding',
+                    out,
+                )
             if verbose:
                 print(f'>> {step}', file=sys.stderr)
             wait = parse_wait_step(step)

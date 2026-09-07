@@ -57,7 +57,7 @@ single byte), preferred over setting it as an early step (`'export
 TERM=dumb' ENTER`), which still races whatever probing happens before
 that step lands.
 
-## The target now gets a real controlling terminal — and a dead target still looks like a quiet run
+## The target now gets a real controlling terminal — and a dead target no longer masquerades
 
 The pty used to be second-class in one more way: the target was spawned
 onto it without `setsid()`, so the pty was never the target's
@@ -74,15 +74,18 @@ foreground job, CTRL-Z/`fg` work, and fish runs like any other shell
 before its first prompt, and a `WAIT-FOR` on the prompt turns that into
 a loud failure).
 
-The part that stays true: **the tool exits 0 even if the target died at
-startup.** fish's refusal used to masquerade perfectly — every step
-"echoed" in the capture (that was the pty's kernel line-discipline
-echo, not the target — nobody was reading), and the run still exited 0.
-When a capture looks like commands were ignored, check the target is
-actually alive: look for the target's *output*, not the echo of what
-you typed (a step's own echo appears whether or not anything executes),
-or use `WAIT-FOR` on an output-only marker so the run fails loudly
-instead of pretending.
+The masquerade that made this hard to see is also fixed: the pty's
+kernel line discipline echoes every step you send whether or not the
+target is alive, so fish's refusal used to look like a quiet successful
+run — every command "echoed", nothing executed, exit 0. The tool now
+checks the target before each step and **fails loudly if it died with
+steps un-sent**: exit 1, the partial capture still on stdout (the
+dying words are the diagnostic), one stderr line naming the exit
+status, the steps never sent, and the next step's name. Dying *after*
+the last step (`'exit' ENTER` as the finale) stays a normal exit-0
+run. The echo-vs-output distinction is still worth internalizing when
+you read any capture: a step's echo tells you what was *typed*; only
+the target's own output tells you anything *executed*.
 
 ## A fancy line editor's own redraws look like typos in a flat capture
 

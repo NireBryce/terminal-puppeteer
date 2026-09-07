@@ -99,7 +99,11 @@ partial line. On exit the target process is just terminated (SIGTERM, then
 SIGKILL if it doesn't go) -- nothing is typed to close it, since a
 "graceful quit" keystroke isn't the same across every target; include an
 explicit ENTER/CTRL-D/'exit' step of your own if a clean logout matters
-for a given repro.
+for a given repro. If the target exits on its own while steps remain --
+a crash, an unwelcome startup, a typo'd target -- the run fails loudly
+(exit 1, partial capture still printed, one stderr line naming the
+status and the steps never sent) instead of typing into a pty nobody is
+reading.
 
 One advisory note lands on stderr after a run: if any BEL (\x07) bytes
 came back from the target -- invisible in both stripped and raw output,
@@ -114,7 +118,7 @@ import sys
 
 from ._version import __version__
 from .ansi import ANSI
-from .driver import WaitForTimeout, run
+from .driver import TargetDied, WaitForTimeout, run
 from .keys import parse_wait_for_step, parse_wait_step, print_key_list, warn_if_near_miss
 
 
@@ -226,6 +230,16 @@ def main():
         # failed repro, not a usage mistake -- exit 1, one-line message
         # saying what was waited for and what was last seen (issue #46),
         # no usage block.
+        p.exit(1, f'{p.prog}: error: {e}\n')
+    except TargetDied as e:
+        # The target died with steps un-sent: a failed repro, same
+        # runtime-failure shape, exit 1, no usage block (issue #37).
+        # The partial capture still goes to stdout first -- it is the
+        # diagnostic (typically the target's own dying words), stripped
+        # the same as a successful run's.
+        captured = e.output if args.raw else ANSI.sub(b'', e.output)
+        sys.stdout.buffer.write(captured)
+        sys.stdout.buffer.write(b'\n')
         p.exit(1, f'{p.prog}: error: {e}\n')
     if not args.raw:
         out = ANSI.sub(b'', out)
