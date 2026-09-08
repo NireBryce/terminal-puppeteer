@@ -1232,24 +1232,56 @@ class DriverStepTests(unittest.TestCase):
         self.assertIn("cannot arrive", str(cm.exception))
 
     def test_target_dying_with_steps_remaining_fails_loudly(self):
-        # The #37 masquerade's fix: steps sent to a dead target raise,
-        # with the exit status, the count sent/remaining, and the
-        # partial capture attached (the target's dying words are the
-        # diagnostic).
+        # The #37 masquerade's fix: a dying target fails the run loudly
+        # instead of quietly absorbing steps -- exit via TargetDied,
+        # the exit status named, the partial capture attached (the
+        # target's dying words are the diagnostic).
+        #
+        # The shape is #58-robust: the death is TRIGGERED by the ENTER
+        # step, the first WAIT-FOR paces on the dying words actually
+        # arriving (bash has then run its last statement), and the
+        # second WAIT-FOR is the catcher -- its liveness loop keeps
+        # checking until the target is really dead, so nothing here
+        # races a fixed instant. That matters more than it sounds:
+        # under load bash's STARTUP can take ~1s (typed input just
+        # queues; the kernel echoes it either way), and even the gap
+        # between bash's last two statements once stretched past half
+        # a second -- any single-point-in-time check can lose that
+        # race, and a lost race used to mean a quiet exit 0.
         with self.assertRaises(driver.TargetDied) as cm:
             driver.run(
-                ["bash", "-c", "echo pre-death; exit 5"],
-                ["a", "ENTER", "b", "ENTER"],
-                0.3, 0.2, 0.3,
+                ["bash", "-c", "read line; echo DYING-WORDS; exit 5"],
+                ["hello", "ENTER", "WAIT-FOR:DYING-WORDS",
+                 "WAIT-FOR:tp-never-arrives"],
+                0.3, 0.2, 0.3, wait_for_timeout=10,
             )
-        self.assertIn(b"pre-death", cm.exception.output)
+        self.assertIn(b"DYING-WORDS", cm.exception.output)
         self.assertIn("status 5", str(cm.exception))
-        self.assertIn("after 0 of 4 steps", str(cm.exception))
-        self.assertIn("next would be 'a'", str(cm.exception))
+        # Deterministic by construction: WHICH check catches the death
+        # varies with timing -- a fast death (the normal case) lands
+        # during the ENTER step's own drain and the very next pre-step
+        # check raises the i-of-N message; a slow one is absorbed by
+        # the final WAIT-FOR's liveness loop ("was still waiting" /
+        # "cannot arrive", budget 10s). Either way the run fails
+        # loudly; nothing races a fixed instant. The two message
+        # templates are each pinned exactly where the timing IS
+        # deterministic: the i-of-N shape by the Session tests (which
+        # wait out the death explicitly and know the index), the
+        # liveness-loop shape by test_wait_for_fails_fast... (#58:
+        # bash's startup, and even the gap between its last two
+        # statements, can stretch past any fixed window under load).
 
     def test_target_killed_by_a_signal_names_the_signal(self):
+        # Same #58-robust shape, with a signal death: the target echoes
+        # a marker, then kills itself; the check after the pacing beat
+        # sees the SIGKILL.
         with self.assertRaises(driver.TargetDied) as cm:
-            driver.run(["bash", "-c", "kill -9 $$"], ["x"], 0.3, 0.2, 0.3)
+            driver.run(
+                ["bash", "-c", "read line; echo SIGNALLED; kill -9 $$"],
+                ["hi", "ENTER", "WAIT-FOR:SIGNALLED",
+                 "WAIT-FOR:tp-never-arrives"],
+                0.3, 0.2, 0.3, wait_for_timeout=10,
+            )
         self.assertIn("SIGKILL", str(cm.exception))
 
     def test_target_dying_after_the_last_step_is_not_an_error(self):
@@ -1348,18 +1380,22 @@ class DriverStepTests(unittest.TestCase):
 
     def test_capture_out_written_when_the_target_dies_mid_run(self):
         # The partial capture is the diagnostic -- the failure path is
-        # exactly what the file is for.
+        # exactly what the file is for. Death triggered by the ENTER
+        # step and paced with WAIT-FOR + a SLEEP beat (#58-robust shape,
+        # same reasoning as the failing-loudly test above).
         with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
             path = f.name
         try:
             with self.assertRaises(driver.TargetDied) as cm:
                 driver.run(
-                    ["bash", "-c", "echo pre-death; exit 5"],
-                    ["a", "ENTER", "b", "ENTER"],
-                    0.3, 0.2, 0.3, capture_path=path,
+                    ["bash", "-c", "read line; echo DYING-WORDS; exit 5"],
+                    ["hello", "ENTER", "WAIT-FOR:DYING-WORDS",
+                     "WAIT-FOR:tp-never-arrives"],
+                    0.3, 0.2, 0.3, wait_for_timeout=10, capture_path=path,
                 )
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), cm.exception.output)
+            self.assertIn(b"DYING-WORDS", cm.exception.output)
         finally:
             os.unlink(path)
 
@@ -1466,26 +1502,45 @@ class SessionTests(unittest.TestCase):
         s.close()  # must not raise; finally blocks call it unconditionally
 
     def test_target_death_raises_with_capture_attached(self):
-        s = session.Session(['bash', '-c', 'echo pre-death; exit 5'],
-                            step_delay=0.2, connect_wait=0.3).start()
+        # Death triggered by the ENTER step, then the test WAITS for
+        # the death it caused (the process handle is right here) before
+        # asserting the guard fires -- no fixed window to race (#58:
+        # startup latency under load can stretch past any fixed check).
+        s = session.Session(
+            ['bash', '-c', 'read line; echo pre-death; exit 5'],
+            step_delay=0.2, connect_wait=0.3,
+        ).start()
         try:
+            s.send_step('hello')
+            s.send_step('ENTER')
+            deadline = time.time() + 10
+            while s.proc.poll() is None and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertIsNotNone(s.proc.poll())
             with self.assertRaises(session.TargetDied) as cm:
-                s.send_step('a', on_death="after 0 of 1 steps; "
+                s.send_step('a', on_death="after 2 of 3 steps; "
                                           "1 not sent, next would be 'a'")
             self.assertIn(b'pre-death', cm.exception.output)
-            self.assertIn("after 0 of 1 steps", str(cm.exception))
+            self.assertIn("after 2 of 3 steps", str(cm.exception))
         finally:
             s.close()
 
     def test_default_death_narrative_names_the_step(self):
         # A library caller sending without run()'s narrative still gets
         # the masquerade warning (#37) naming what was never read.
-        s = session.Session(['bash', '-c', 'exit 5'],
+        # Same wait-for-the-death-you-caused shape as above.
+        s = session.Session(['bash', '-c', 'read line; exit 5'],
                             step_delay=0.2, connect_wait=0.3).start()
         try:
+            s.send_step('hi')
+            s.send_step('ENTER')
+            deadline = time.time() + 10
+            while s.proc.poll() is None and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertIsNotNone(s.proc.poll())
             with self.assertRaises(session.TargetDied) as cm:
-                s.send_step('hi')
-            self.assertIn("before step 'hi' could be sent", str(cm.exception))
+                s.send_step('b')
+            self.assertIn("before step 'b' could be sent", str(cm.exception))
             self.assertIn("pty echo", str(cm.exception))
         finally:
             s.close()
@@ -1691,20 +1746,28 @@ class SecondHostSshTests(unittest.TestCase):
 class CliIntegrationTests(unittest.TestCase):
     """End-to-end runs against a local `cat` (or similar) under a real pty."""
 
-    def test_early_target_death_exits_1_with_capture_and_explanation(self):
+    def test_target_death_exits_1_with_capture_and_explanation(self):
         # CLI shape of the #37 fix: the failed run still shows the
         # capture (stripped, like a successful one) on stdout, explains
         # the death and what was never sent on stderr, and exits 1 --
-        # instead of exit-0 with a masquerading capture.
+        # instead of exit-0 with a masquerading capture. The death is
+        # TRIGGERED by the ENTER step and paced with WAIT-FOR + a SLEEP
+        # beat (#58-robust shape): WAIT-FOR proves bash ran its last
+        # statement, so the check that fires is not racing process
+        # startup -- under load bash can take ~1s to even reach its
+        # first command, and a startup-exiting target used to stay
+        # "alive" past every fixed check, turning the run into a quiet
+        # exit 0.
         result = run_cli(
-            ["--cmd", 'bash -c "echo pre-death; exit 5"', *FAST,
-             "a", "ENTER", "b", "ENTER"],
+            ["--cmd", 'bash -c "read line; echo pre-death; exit 5"', *FAST,
+             "hello", "ENTER", "WAIT-FOR:pre-death",
+             "WAIT-FOR:tp-never-arrives"],
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"pre-death", result.stdout)
         self.assertIn(b"status 5", result.stderr)
-        self.assertIn(b"after 0 of 4 steps", result.stderr)
-        self.assertIn(b"pty echo", result.stderr)
+        # Which message template fires varies with timing (see the
+        # direct test above); the loud-failure shape does not.
         self.assertNotIn(b"Traceback", result.stderr)
 
     def test_rows_and_cols_flags_end_to_end(self):
@@ -2073,12 +2136,16 @@ class CliIntegrationTests(unittest.TestCase):
     def test_capture_out_file_written_when_the_target_dies(self):
         # The failure path is the point: a failed run leaves the partial
         # capture in the file, same content the exit-1 stdout shows.
+        # Death triggered by the ENTER step, paced with WAIT-FOR + a
+        # SLEEP beat (#58-robust shape).
         with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
             path = f.name
         try:
             result = run_cli(
-                ["--cmd", 'bash -c "echo pre-death; exit 5"',
-                 "--capture-out", path, *FAST, "a", "ENTER"],
+                ["--cmd", 'bash -c "read line; echo pre-death; exit 5"',
+                 "--capture-out", path, *FAST,
+                 "hello", "ENTER", "WAIT-FOR:pre-death",
+                 "WAIT-FOR:tp-never-arrives"],
             )
             self.assertEqual(result.returncode, 1)
             with open(path, "rb") as f:

@@ -25,6 +25,17 @@ the reasoning isn't lost.
 
 ## Done
 
+- [x] **#58: death-race tests made deterministic** — 2026-09-08. Root
+  cause: bash's STARTUP (and even the gap between its last two
+  statements) can stretch past any fixed check window under load;
+  queued input still echoes (kernel-side), so captures look normal
+  while poll() rightly says alive. Fix is in the test shapes — death
+  TRIGGERED by a step, dying words waited for with `WAIT-FOR:`, the
+  catcher being the liveness-loop WAIT-FOR (or an explicit
+  `proc.poll()` wait at Session level) — not in the driver's guard:
+  the post-loop check sketched on the issue would have broken the
+  clean-logout shape. Details in DEVLOG 2026-09-08.
+
 - [x] **`--screen` layout renderer** — 0.5.0 (2026-09-08). The final
   capture rendered as a terminal grid (sized by `--rows`/`--cols`):
   the layout-only C0/CSI subset (cursor positioning, erase, ICH/DCH,

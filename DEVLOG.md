@@ -13,6 +13,47 @@ or a commit message instead.
 
 ---
 
+## 2026-09-08 — #58: the death-race tests made deterministic (no version bump)
+
+- **Root cause found, and it wasn't what the issue guessed.** The
+  flaky shape (`bash -c "…; exit N"` + a fixed check window) failed
+  because bash's STARTUP is the long pole: under load it can take
+  ~1s to even reach its first command, and input typed before that
+  just sits in the tty queue — the kernel echoes it regardless, so
+  the capture looks perfectly normal while poll() rightly says alive.
+  Probing further: even the gap between a target's last two
+  statements (`echo DYING-WORDS; kill -9 $$`) once stretched past
+  half a second. Any single-point-in-time check can lose those races;
+  measured ~13% per-trial on an otherwise idle loop.
+- **Fix: the tests now pace on the target's actual behavior instead
+  of racing fixed windows.** The death is TRIGGERED by a step (an
+  ENTER completing a `read`), the dying words are waited for with
+  `WAIT-FOR:` (proof bash ran its last statement), and the final
+  `WAIT-FOR:tp-never-arrives` is the catcher — its liveness loop
+  keeps checking until the target is really dead, within budget.
+  Which message template fires varies with timing (fast death → the
+  i-of-N pre-check message; slow death → the liveness-loop message),
+  so the run()-level tests assert the loud-failure shape (TargetDied,
+  status named, dying words in the capture) and NOT the template.
+  The Session tests wait out the death explicitly on the process
+  handle (`while proc.poll() is None`) and pin the exact i-of-N and
+  default-narrative message formatting deterministically.
+- **Guard semantics unchanged, deliberately.** The issue's sketch of
+  a post-loop death check would break the clean-logout shape
+  (`test_target_dying_after_the_last_step_is_not_an_error`): a target
+  that dies during the last step's drain is exactly the `exit`+ENTER
+  finale, and the driver cannot distinguish "read my last line and
+  exited" from "died before reading it". The blind spot after the
+  final pre-step check is documented behavior, not an oversight.
+- 7 tests reshaped (3 direct driver, 2 Session, 2 CLI); one renamed
+  (`test_early_target_death_exits_1_with_capture_and_explanation` →
+  `test_target_death_exits_1_with_capture_and_explanation`, since the
+  death is no longer pinned to startup). Suite still 224; the
+  reshaped set passed 20/20 consecutive loop iterations (the old
+  shapes flaked 1/6 to 4/6 under the same load).
+
+---
+
 ## 2026-09-08 — 0.5.0: --screen renders the capture as a terminal grid
 
 - **screen.py: a layout-only ANSI interpreter over the raw capture** —
