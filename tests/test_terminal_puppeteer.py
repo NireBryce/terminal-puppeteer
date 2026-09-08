@@ -5,16 +5,18 @@ sys.path via REPO_ROOT below), not loaded by path:
 
 - Unit tests for the pure helpers (`keys.encode_step`, `cli.load_steps`,
   `ansi.ANSI`, `keys.print_key_list`) that don't need a pty at all.
-- Direct tests of `driver.drain`/`driver.run` -- still real fds/a real
-  pty/a real subprocess, just called directly instead of through a
-  spawned CLI process, so they can check things (timing precision, fd
-  counts) the CLI layer below can't reach into as easily.
+- Direct tests of `driver.drain`/`driver.run` and `session.Session` --
+  still real fds/a real pty/a real subprocess, just called directly
+  instead of through a spawned CLI process, so they can check things
+  (timing precision, fd counts, reaping) the CLI layer below can't
+  reach into as easily.
 - CLI integration tests that actually invoke `terminal-puppeteer.py` (the
   thin wrapper at the repo root) as a subprocess against a local `--cmd`
-  target (`cat`, `printf`, `bash`) with short delays, and check the
-  captured stdout byte-for-byte, exercising the whole thing end to end
-  (argparse validation, process termination, real shell targets) the way
-  an agent actually would.
+  target (`cat`, `printf`, `bash`) and check the captured stdout
+  byte-for-byte, exercising the whole thing end to end (argparse
+  validation, process termination, real shell targets) the way an agent
+  actually would -- including the `--repl` sentinel protocol, driven
+  through a piped stdin.
 
 Deliberately stdlib-only (`unittest`), matching the project itself.
 """
@@ -37,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "terminal-puppeteer.py"
 
 sys.path.insert(0, str(REPO_ROOT))
-from terminal_puppeteer import ansi, cli, driver, keys  # noqa: E402
+from terminal_puppeteer import ansi, cli, driver, keys, session  # noqa: E402
 
 # Short delays for CLI integration tests -- long enough for a local `cat`/
 # `printf`/`bash` to respond, short enough that the suite doesn't crawl.
@@ -49,6 +51,17 @@ FAST = ["--connect-wait", "0.2", "--step-delay", "0.3", "--settle", "0.3"]
 def run_cli(args, timeout=30):
     return subprocess.run(
         [sys.executable, str(SCRIPT_PATH), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
+
+
+def run_cli_input(args, stdin_bytes, timeout=30):
+    # The --repl shape: stdin is the step stream, piped here.
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), *args],
+        input=stdin_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
@@ -1207,6 +1220,144 @@ class DriverStepTests(unittest.TestCase):
             os.unlink(path)
 
 
+class SessionTests(unittest.TestCase):
+    """Direct tests of session.Session -- the core driver.run() and
+    --repl both drive. Real pty, real subprocess, called directly so
+    the fd-leak/reap guarantees are pinned on the class itself, not
+    just observed through run() (RunDirectTests' shape)."""
+
+    def test_send_step_types_and_drains(self):
+        s = session.Session(['cat'], step_delay=0.3, connect_wait=0.2).start()
+        try:
+            s.send_step('hi')
+            self.assertIn(b'hi', s.output)
+        finally:
+            s.close()
+
+    def test_send_step_dispatches_the_driver_forms(self):
+        # The dispatch belongs to Session now, not run(): a SLEEP writes
+        # nothing (cat produces nothing on its own, so an empty capture
+        # is the proof) and a PASTE arrives framed.
+        s = session.Session(['cat'], step_delay=0.3, connect_wait=0.2).start()
+        try:
+            s.send_step('SLEEP 0.2')
+            self.assertEqual(s.output, b'')
+            s.send_step('PASTE:x')
+            self.assertIn(b'^[[200~x^[[201~', s.output)
+        finally:
+            s.close()
+
+    def test_expect_matches_output(self):
+        argv = ['bash', '-c', 'sleep 0.4; echo READY-7; cat']
+        s = session.Session(argv, step_delay=0.2, connect_wait=0.2,
+                            wait_for_timeout=5).start()
+        try:
+            s.expect(re.compile(b'READY-7'))
+            self.assertIn(b'READY-7', s.output)
+        finally:
+            s.close()
+
+    def test_expect_timeout_raises(self):
+        s = session.Session(['cat'], step_delay=0.2, connect_wait=0.2,
+                            wait_for_timeout=0.5).start()
+        try:
+            with self.assertRaises(session.WaitForTimeout):
+                s.expect(re.compile(b'tp-never-arrives'))
+        finally:
+            s.close()
+
+    def test_expect_only_new_ignores_output_from_before(self):
+        # The marker lands during connect-wait; an only_new expect must
+        # not match it and must time out rather than silently succeed.
+        argv = ['bash', '-c', 'echo TP-SESS-MARK; cat']
+        s = session.Session(argv, step_delay=0.2, connect_wait=0.3,
+                            wait_for_timeout=0.8).start()
+        try:
+            with self.assertRaises(session.WaitForTimeout):
+                s.expect(re.compile(b'TP-SESS-MARK'), only_new=True)
+        finally:
+            s.close()
+
+    def test_resize_changes_the_pty_size(self):
+        s = session.Session(['bash', '--norc', '-i'], step_delay=0.6,
+                            connect_wait=0.8, settle=0.5).start()
+        try:
+            s.send_step('stty size')
+            s.send_step('ENTER')
+            self.assertIn(b'24 80', s.output)
+            s.resize(40, 120)
+            s.send_step('stty size')
+            s.send_step('ENTER')
+            self.assertIn(b'40 120', s.output)
+        finally:
+            s.close()
+
+    @unittest.skipUnless(os.path.isdir('/proc/self/fd'), 'no /proc/self/fd here')
+    def test_close_reaps_the_target_and_leaks_no_fds(self):
+        before = len(os.listdir('/proc/self/fd'))
+        s = session.Session(['cat'], step_delay=0.2, connect_wait=0.2).start()
+        s.close()
+        self.assertEqual(before, len(os.listdir('/proc/self/fd')))
+        self.assertIsNotNone(s.proc)
+        self.assertIsNotNone(s.proc.poll())  # reaped, not merely killed
+
+    def test_close_is_idempotent(self):
+        s = session.Session(['cat'], step_delay=0.2, connect_wait=0.2).start()
+        s.close()
+        s.close()  # must not raise; finally blocks call it unconditionally
+
+    def test_target_death_raises_with_capture_attached(self):
+        s = session.Session(['bash', '-c', 'echo pre-death; exit 5'],
+                            step_delay=0.2, connect_wait=0.3).start()
+        try:
+            with self.assertRaises(session.TargetDied) as cm:
+                s.send_step('a', on_death="after 0 of 1 steps; "
+                                          "1 not sent, next would be 'a'")
+            self.assertIn(b'pre-death', cm.exception.output)
+            self.assertIn("after 0 of 1 steps", str(cm.exception))
+        finally:
+            s.close()
+
+    def test_default_death_narrative_names_the_step(self):
+        # A library caller sending without run()'s narrative still gets
+        # the masquerade warning (#37) naming what was never read.
+        s = session.Session(['bash', '-c', 'exit 5'],
+                            step_delay=0.2, connect_wait=0.3).start()
+        try:
+            with self.assertRaises(session.TargetDied) as cm:
+                s.send_step('hi')
+            self.assertIn("before step 'hi' could be sent", str(cm.exception))
+            self.assertIn("pty echo", str(cm.exception))
+        finally:
+            s.close()
+
+    def test_capture_path_written_on_close(self):
+        with tempfile.NamedTemporaryFile(suffix='.cap', delete=False) as f:
+            path = f.name
+        try:
+            s = session.Session(['cat'], step_delay=0.3, connect_wait=0.2,
+                                capture_path=path).start()
+            s.send_step('x')
+            s.close()
+            with open(path, 'rb') as f:
+                self.assertEqual(f.read(), s.output)
+        finally:
+            os.unlink(path)
+
+    @unittest.skipUnless(os.path.isdir('/proc/self/fd'), 'no /proc/self/fd here')
+    def test_failed_start_leaks_no_fds(self):
+        # The caller-side shape the docstring prescribes: close() in a
+        # finally even when start() itself raised -- and it must be a
+        # no-op then, not a second fd closer or a crash.
+        before = len(os.listdir('/proc/self/fd'))
+        s = session.Session(['tp-definitely-not-a-real-command-xyz'],
+                            step_delay=0.1, connect_wait=0.1)
+        with self.assertRaises(OSError):
+            s.start()
+        s.close()
+        self.assertEqual(before, len(os.listdir('/proc/self/fd')))
+
+
 def _fish_major():
     """None when fish is absent; its major version otherwise. The fish
     tests were verified against fish 4.x (issue #37's chase) -- 3.x
@@ -1815,6 +1966,101 @@ class CliTimingTests(unittest.TestCase):
         )
         elapsed = time.time() - t0
         self.assertGreaterEqual(elapsed, 1.2)
+
+
+class ReplTests(unittest.TestCase):
+    """The --repl sentinel protocol, driven through a piped stdin: every
+    step line gets exactly one response (its new output, then
+    '<< DONE'; '<< DEAD <why>' when the step fails), '#' lines are
+    comments, ':quit'/EOF settle-and-close with exit 0, DEAD exits 1."""
+
+    def _repl(self, stdin_bytes, *extra, timeout=30):
+        return run_cli_input(
+            ['--cmd', 'cat', *FAST, '--repl', *extra], stdin_bytes, timeout
+        )
+
+    def test_sentinel_protocol_through_quit(self):
+        result = self._repl(b'hi\nENTER\n:quit\n')
+        self.assertEqual(result.returncode, 0)
+        # Startup block + one per step: exactly one DONE per response.
+        self.assertEqual(result.stdout.count(b'<< DONE'), 3)
+        self.assertTrue(result.stdout.endswith(b'<< DONE\n'))
+        self.assertIn(b'hi', result.stdout)
+
+    def test_eof_settles_and_closes(self):
+        result = self._repl(b'hi\nENTER\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count(b'<< DONE'), 3)
+
+    def test_comments_and_blank_lines_are_skipped(self):
+        # Not steps, so no sentinel for them -- DONE only for the real
+        # step plus the startup block.
+        result = self._repl(b'# a comment\n\nhi\n:quit\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count(b'<< DONE'), 2)
+
+    def test_dead_sentinel_exits_1(self):
+        # Deterministic death ordering: the target exits after the
+        # ENTER step completes (read line, echo it, exit), so the
+        # following step is the one that hits the guard -- no race on
+        # startup timing (issue #58's shape).
+        result = run_cli_input(
+            ['--cmd', 'bash -c "read line; echo got-$line; exit 4"',
+             *FAST, '--repl'],
+            b'hello\nENTER\nafter\n',
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.count(b'<< DONE'), 3)  # startup + 2 steps
+        self.assertIn(b'got-hello', result.stdout)
+        self.assertIn(b'<< DEAD target exited with status 4', result.stdout)
+        self.assertIn(b"before step 'after' could be sent", result.stdout)
+
+    def test_malformed_step_is_a_usage_error(self):
+        # Same vocabulary, same rejection as the one-shot path: 'SLEEP
+        # abc' must never be typed into the target mid-session either.
+        result = self._repl(b'SLEEP abc\n')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b'wait step', result.stderr)
+        self.assertNotIn(b'Traceback', result.stderr)
+
+    def test_repl_rejects_positional_steps(self):
+        # stdin IS the step stream in --repl mode; positional steps
+        # would collide with it.
+        result = run_cli(["--cmd", "cat", *FAST, "--repl", "x"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b'no positional steps', result.stderr)
+
+    def test_repl_rejects_steps_file(self):
+        result = run_cli(["--cmd", "cat", *FAST, "--repl",
+                          '--steps-file', 'some-file.txt'])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b'--steps-file does not apply', result.stderr)
+
+    def test_raw_flag_keeps_escapes_in_the_deltas(self):
+        # Delta stripping follows --raw the same way whole-capture
+        # printing does: default strips the printf's color codes out of
+        # the startup block, --raw keeps them.
+        cmd = "bash -c \"printf 'a\\033[31mb\\033[0mc'; cat\""
+        result = run_cli_input(['--cmd', cmd, *FAST, '--repl'], b':quit\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b'ab', result.stdout)
+        self.assertNotIn(b'\x1b[', result.stdout)
+        result = run_cli_input(['--cmd', cmd, '--raw', *FAST, '--repl'],
+                               b':quit\n')
+        self.assertIn(b'\x1b[31m', result.stdout)
+
+    def test_capture_out_composes_with_repl(self):
+        # The full-session capture file, same raw-bytes guarantee as the
+        # one-shot path, written by Session.close at the end.
+        with tempfile.NamedTemporaryFile(suffix='.cap', delete=False) as f:
+            path = f.name
+        try:
+            result = self._repl(b'hi\n:quit\n', '--capture-out', path)
+            self.assertEqual(result.returncode, 0)
+            with open(path, 'rb') as f:
+                self.assertIn(b'hi', f.read())
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":

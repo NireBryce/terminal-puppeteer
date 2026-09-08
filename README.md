@@ -68,6 +68,9 @@ rather than generic AI-PR boilerplate.
 # a scripted multi-step repro, read from a file instead of argv
 ./terminal-puppeteer.py --ssh myhost --steps-file repro.txt
 
+# interactive: feed steps a line at a time, pace on each response
+echo 'echo hi' ENTER | ./terminal-puppeteer.py --cmd 'bash -i' --repl
+
 # what "TAB", "CTRL-U", etc. actually send, without a trip to the docs
 ./terminal-puppeteer.py --list-keys
 ```
@@ -256,6 +259,43 @@ responding, not a real ordering bug. The three forms compose: a step
 list reads `'setup' ENTER SLEEP 5 'the probe' ENTER
 WAIT-FOR:the-answer` — `SLEEP` for settle-time pacing, `WAIT-FOR` for
 reactive pacing, `--step-delay` for typing cadence.
+
+## Interactive mode: `--repl`
+
+`--repl` inverts the one-shot model. It starts the target, reports
+whatever the connect-wait window caught (usually the banner/prompt),
+and then reads the same step vocabulary from stdin one line at a time —
+`#` lines are comments, `:quit` or EOF ends the session (a final
+`--settle` drain, then the target is terminated as always). After each
+step it prints just the NEW output since the last one — stripped unless
+`--raw` — followed by a sentinel line:
+
+    << DONE
+
+or, when the step failed (the target died, or a WAIT-FOR pattern never
+arrived within `--wait-for-timeout`):
+
+    << DEAD target exited with status 4 before step 'after' could be sent -- ...
+
+Exactly one response per step line, always, and the exit status says
+which way the session ended (0 for `:quit`/EOF, 1 for DEAD) — so a
+driving agent can send a line, read the response, and decide the next
+line without ever waiting on a sentinel that won't come. Same boundary
+caveat as `WAIT-FOR-NEXT`, one level up: "new since the last step" is
+a cut on the raw stream, so with stripping on, an escape sequence
+straddling the cut can add up to one stray sequence to a delta.
+
+Built for agents driving a session a round at a time — send a line,
+read the response, decide the next line — instead of scripting a whole
+repro blind. Takes no positional steps and no `--steps-file` (stdin
+*is* the step stream); every other flag — `--answer-queries`,
+`--capture-out`, `--rows`/`--cols`, the timing flags — applies as in a
+one-shot run, and `--capture-out` gets the whole session's capture.
+
+The `Session` class behind it (`terminal_puppeteer.session`: `start`/
+`send_step`/`expect`/`resize`/`close`) is importable for the same style
+of use from Python, and `driver.run()` is a thin loop over it — one
+code path for both, not two that drift.
 
 ## Exit behavior
 
