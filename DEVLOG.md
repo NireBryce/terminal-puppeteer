@@ -13,6 +13,66 @@ or a commit message instead.
 
 ---
 
+## 2026-09-07 — 0.3.6: CSI/DCS stripping over a real ssh transport; the --ssh TODO half-closes
+
+- **ansi: private-marker CSI and DCS sequences are stripped now.** The
+  CSI branch only allowed `0-9;?` in the parameter area, so everything
+  with the other legal parameter bytes (`:` and the private markers
+  `< = >`) survived stripping: ble.sh's XTMODKEYS pushes (`ESC[>4;1m`),
+  its DA2 request (`ESC[>c`), kitty flag pushes (`ESC[>Nu`), DA3
+  (`ESC[=c`), colon-SGR (`38:2::r:g:b`). And there was no DCS branch at
+  all, so XTGETTCAP traffic (fish and ble.sh both speak it) and
+  --answer-queries' own XTVERSION reply leaked too. The regex now
+  implements the actual VT grammar (parameter bytes `0-9:;<=>?`,
+  intermediates `0x20-0x2F`, one final `0x40-0x7E`) — exact, not
+  heuristic — plus a DCS branch with the OSC payload argument (payload
+  can't contain ESC). `ESC E` (NEL) joined the single-char class.
+  Unterminated sequences and UTF-8 continuation bytes that *look* like
+  CSI syntax (ӣ = `\xd3\x9b`) stay untouched, pinned by tests. Seven
+  new regex tests.
+- **The `--ssh` TODO item halves.** The "needs a machine" blocker was
+  too pessimistic: the local sshd is a real ssh transport. Verified
+  end to end through the tool over `ssh -tt` loopback: round-trip
+  execution, `stty size` → `24 80` propagating through ssh's pty
+  request (a client with no tty on its side gets a 0x0 remote pty —
+  probed directly), job control `m` over `-tt`, CTRL-C killing a remote
+  foreground job (status 130), clean-logout and `exit 3` finale shapes,
+  `--ssh-arg` passthrough. Pinned as `SshTransportTests`
+  (`skipUnless` passwordless localhost ssh works), which drive a plain
+  remote `bash --norc` on purpose — the transport is the thing under
+  test, not the author's dotfiles. TODO.md's item narrows to "a
+  genuinely different host" (ts-tenacity's sshd was down when tried).
+- **CI runs the ssh tests for real**: test.yml starts the runner's own
+  sshd and authorizes it to itself — same reasoning as #53's fish PPA
+  step (otherwise the tests run only on the author machine). Free on a
+  public repo, and the step costs seconds.
+- **README's documented `--ssh-arg -o` form never parsed**: argparse
+  reads a bare `-o` value as the next option (`expected one argument`).
+  README and the man page now show the `--ssh-arg=-o` form; a test pins
+  the `=` form end to end.
+- **Four new NOTES.md gotchas** from the verification: ssh puts every
+  timing gotcha one tty further away (and CTRL-C delivery is racy —
+  retry before concluding); `--answer-queries` is a fish fix that
+  *breaks* ble.sh (the canned cursor-position replies arrive late, land
+  as idle input, and drive endless redraws that swallow steps — left
+  unanswered, ble.sh's probe storm self-settles in ~2s, measured on a
+  bare pty); a step named `sleep N`/`wait N` is a driver wait, not a
+  typed command (the repro that "failed" for an hour never sent its
+  sleep at all); and WAIT-FOR can match the echo of its own input —
+  pick output-only markers. The garbled `[▽][▶]…` at the top of
+  ble.sh captures is *not* a stripping bug: that's ble.sh's
+  cursor-glyph probe printing literal bracketed text between
+  sequences.
+- Fish-over-ssh skipped: fish isn't installed on this machine (0.3.1's
+  verification used a throwaway `nix shell`), and the transport findings
+  don't depend on which shell drove them. Needs fish installed or a
+  second host (TODO.md).
+- Tests 129 → 138 (seven regex, two ssh transport, version bump
+  sync-checked by the existing guard). 0.3.5 → 0.3.6 (pyproject,
+  `_version.py`, man `.TH`).
+
+---
+
 ## 2026-09-07 — CI: fish tests run for real; wheel round-trip job
 
 - The two fish integration tests skipped everywhere — no fish on

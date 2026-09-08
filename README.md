@@ -89,9 +89,12 @@ run in place).
 Exactly one of these, always:
 
 - **`--ssh HOST`** — shorthand for `--cmd "ssh -tt HOST"`. `--ssh-arg` adds
-  extra `ssh` args (repeatable) — e.g. `--ssh-arg -o --ssh-arg BatchMode=yes`
-  for a non-interactive auth check, or `--ssh-arg -o --ssh-arg
-  ConnectTimeout=5`. Only valid alongside `--ssh`.
+  extra `ssh` args (repeatable) — e.g. `--ssh-arg=-o --ssh-arg=BatchMode=yes`
+  for a non-interactive auth check, or `--ssh-arg=-o --ssh-arg=ConnectTimeout=5`
+  (the `=` form is required: argparse reads a bare `-o` as the next option).
+  Only valid alongside `--ssh`. Verified end to end over a real ssh transport
+  (see NOTES.md for the ssh-specific gotchas: latency, pacing, interrupt
+  delivery).
 - **`--cmd COMMAND`** — any command, shell-quoted as one string and split
   with `shlex.split` (so quote it the way you'd type it: `--cmd 'bash -i'`,
   `--cmd 'tmux attach -t work'`, `--cmd 'python3 -i'`). Runs local to

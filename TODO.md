@@ -7,13 +7,23 @@ lists its blocker instead of sitting half-done.
 
 ## Open
 
-- [ ] **Live `--ssh` verification against a real second host** — needs a
-  machine, not a sandbox; every feature since 0.2.0 is exercised
-  locally and in CI, but never over a real ssh transport. Blocker:
-  provide a host (or approve one) and this runs.
+- [ ] **`--ssh` against a genuinely different host** — the transport
+  itself is verified now (real `ssh -tt` loopback to the local sshd:
+  round-trip, 24x80 window propagation, job control, CTRL-C, exit
+  shapes; pinned as `SshTransportTests`, run in CI against its own
+  sshd). What loopback can't cover: a different machine's sshd config,
+  OS, and network path. Blocker: `ts-tenacity` has keys set up but its
+  sshd wasn't answering when tried (2026-09-07) — start sshd there (or
+  name another host) and this runs.
 
 ## Done
 
+- [x] **Verify the `--ssh` path over a real ssh transport** — 0.3.6.
+  Loopback to the local sshd: round-trip, 24x80 propagation, job
+  control, CTRL-C, exit shapes, `--ssh-arg` passthrough (which also
+  surfaced that the README's `-o` example never parsed). Pinned as
+  `SshTransportTests`, run in CI against the runner's own sshd.
+  Remaining: a genuinely different host (see Open).
 - [x] **ansi: strip ST-terminated OSC sequences** — 0.3.5. `ESC ] payload
   ESC \` (fish's OSC 133 prompt marks, our own OSC 11 reply, OSC 8
   hyperlinks) used to survive "stripped" output; only the BEL
