@@ -141,8 +141,8 @@ added newline, or one of a closed set of named keys (case-insensitive):
 
 `--list-keys` prints this same table (computed from the same table the
 tool itself uses, not transcribed separately) and exits — the exact
-bytes without a trip back to this file, plus the `RAW:`/`SLEEP`/
-`WAIT-FOR` forms below. `CTRL-`*letter* isn't a fixed
+bytes without a trip back to this file, plus the other step forms below.
+`CTRL-`*letter* isn't a fixed
 list: any letter A–Z works, not just the handful (`CTRL-C`/`CTRL-D`)
 that used to be hardcoded — `CTRL-U`, `CTRL-L`, `CTRL-W`, `CTRL-A` all
 work the same way.
@@ -151,9 +151,12 @@ A step that doesn't match any known key is still sent as literal text,
 same as ever — but if it's *close* to one (`CTRLC` missing its hyphen,
 `ENTR` a typo) a warning goes to stderr saying so. It's advisory only:
 the step still goes out literally either way, this just flags the case
-that's more likely a mistake than intended text.
+that's more likely a mistake than intended text. A step spelled like a
+typed command — lowercase `sleep 30`/`wait 30` — is a *recognized*
+driver-side wait that sends nothing, and gets its own advisory note
+pointing at the `RAW:` form that types it for real.
 
-Three more step forms cover what named keys can't express:
+More step forms cover what named keys can't express:
 
 - **`RAW:<escapes>`** — bytes through a `bind`-style escape parser, sent
   as one write: `'RAW:\e[I'` sends the focus-in sequence `\e[I` as a
@@ -165,6 +168,15 @@ Three more step forms cover what named keys can't express:
   literal. The explicit prefix is the point — a plain step was never
   supposed to grow escape syntax, so text that merely starts with a
   backslash keeps meaning what it always meant.
+- **`PASTE:<text>`** — the text wrapped in real bracketed-paste framing
+  (`\e[200~` … `\e[201~`), sent as one write, with the same
+  `bind`-style escapes `RAW:` understands. The way to express a
+  multi-line paste in one step: a line editor with bracketed-paste mode
+  enabled treats the whole payload as one paste and holds its newlines
+  literal, instead of executing each line as it arrives (what a plain
+  multi-line write does — see NOTES.md's bulk-paste gotcha). Against a
+  target that never enabled bracketed-paste mode, the framing bytes
+  usually arrive as ignored noise and the payload types in plainly.
 - **`SLEEP <seconds>`** (or `WAIT <seconds>`) — a driver-side pause:
   sends nothing, just keeps draining for N seconds. Unlike a
   target-side `'sleep 5' ENTER` workaround, it puts nothing in the
@@ -172,6 +184,12 @@ Three more step forms cover what named keys can't express:
   hooks firing mid-observation, no transcript noise — and it works for
   non-shell targets. `--step-delay` retimes every step; this retimes
   one.
+- **`RESIZE <rows> <cols>`** — a driver-side resize of the pty
+  mid-run: the kernel delivers SIGWINCH to the target's foreground
+  process group, the same delivery a real terminal's resize produces.
+  `--rows`/`--cols` (below) fix the size the pty *starts* with; this
+  changes it once the session is live — for repros that only misbehave
+  after a resize, or that need a narrow wrap applied mid-line.
 - **`WAIT-FOR:<pattern>`** — drain until the ANSI-stripped output
   accumulated so far matches: a literal substring, or a regex when
   wrapped in `/.../`. Paces on the target's actual output instead of a
@@ -187,6 +205,15 @@ Three more step forms cover what named keys can't express:
   against the transcript, which includes the echo of your own typing —
   wait for a marker that only exists in the target's *output*, not one
   you also typed.
+- **`WAIT-FOR-NEXT:<pattern>`** — the same matching, same `/.../`
+  regex form, same timeout — but only against output arriving *after
+  the step starts*. The echo of your own typing and a prompt that
+  already contained the marker cannot satisfy it, which is exactly the
+  caveat above, fixed by form: `WAIT-FOR-NEXT:done-42` after typing
+  `done-42` waits for the *target* to say it. Honest boundary caveat:
+  "after" is a length measured on the stripped stream, and one escape
+  sequence can straddle it, so it's exact to within about one escape
+  sequence at the boundary.
 
 **No step ever gets an implicit trailing newline.** That's what lets a step
 be a bare `TAB` or a partial line someone's about to keep typing — but it
@@ -260,7 +287,16 @@ startup looked exactly like a quiet, successful run
 target (default 24 × 80, a fresh terminal's — see the `--cmd` section
 for why it isn't 0×0). Useful when a repro is size-sensitive: a TUI
 that only misrenders below N columns, an editor's wrapping, a
-progress-bar width.
+progress-bar width. `RESIZE <rows> <cols>` (Steps, above) changes that
+size mid-run.
+
+`--capture-out FILE` also writes the raw, unstripped pty capture to a
+file — `--raw` changes stdout's rendering only, and the file always gets
+the bytes exactly as they came off the pty. Written on every exit path:
+a run that fails mid-way (target death, WAIT-FOR timeout) still leaves
+the partial capture in the file, which is the diagnostic. For byte-exact
+work (`od`-level checks, or feeding a capture to another tool) this
+beats scraping stdout.
 
 `--verbose`/`-v` prints each step to stderr as it's sent (`>> TAB`), for
 watching a long or slow multi-step run happen live instead of waiting

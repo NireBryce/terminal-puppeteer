@@ -31,10 +31,10 @@ Three specific ways a plain tool call differs from a person typing:
                      bracketed-paste framing, each embedded newline submits
                      whatever line precedes it right then, so a multi-line
                      function definition sent as one write arrives as
-                     several partial commands. Real bracketed-paste support
-                     is more machinery than this needs -- keep multi-line
-                     payloads to a `source /path/to/file` step instead of
-                     typing the file's contents.
+                     several partial commands. The PASTE: step form below
+                     supplies real bracketed-paste framing; a `source
+                     /path/to/file` step avoids typing the contents
+                     entirely.
 
 Originally built by an agent (Claude Code) to reproduce a ble.sh/bash
 completion bug that only ever showed up while actually typing at a real
@@ -64,7 +64,7 @@ intended. `--steps-file` reads one step per line instead (blank lines
 skipped, `#`-prefixed lines are comments, `-` reads from stdin) -- useful
 once a repro grows past what's comfortable as shell arguments.
 
-Three more step forms cover what the key vocabulary can't express:
+The other step forms cover what the key vocabulary can't express:
 
   RAW:<escapes>      bytes through a bind/readline-style escape parser --
                      'RAW:\e[I' sends the focus-in sequence \e[I as ONE
@@ -75,12 +75,27 @@ Three more step forms cover what the key vocabulary can't express:
                      \xHH, \a \b \t \n \v \f \r, \\; anything else stays
                      literal.
 
+  PASTE:<text>       the text wrapped in real bracketed-paste framing
+                     (\e[200~ ... \e[201~), sent as one write, with the
+                     same bind-style escapes RAW: understands. The way to
+                     express a multi-line paste in one step: a line editor
+                     with bracketed-paste mode enabled treats the whole
+                     payload as one paste and holds its newlines literal,
+                     instead of executing each line as it arrives.
+
   SLEEP <seconds>    a driver-side pause: sends nothing, just keeps
                      draining for N seconds. Unlike a target-side
                      'sleep 5' ENTER, it puts nothing in the session
                      under test -- no history entry, no PROMPT_COMMAND/
                      precmd hooks, no transcript noise, and it works for
                      non-shell targets.
+
+  RESIZE <rows> <cols>
+                     resize the pty mid-run: the kernel delivers SIGWINCH
+                     to the target's foreground process group, the same
+                     delivery a real terminal's resize produces.
+                     --rows/--cols fix the size the pty starts with;
+                     this changes it once the session is live.
 
   WAIT-FOR:<pattern> drain until the ANSI-stripped output accumulated so
                      far matches -- a literal substring, or a regex when
@@ -91,6 +106,13 @@ Three more step forms cover what the key vocabulary can't express:
                      not). Fails the run with exit 1 and the last output
                      seen on stderr if nothing matches within
                      --wait-for-timeout.
+
+  WAIT-FOR-NEXT:<pattern>
+                     the same matching, but only against output arriving
+                     after the step starts -- the echo of your own typing
+                     and a prompt that already contained the marker
+                     cannot satisfy it (WAIT-FOR's transcript includes
+                     both). Same /.../ regex form, same timeout.
 
 No step ever gets an implicit trailing newline -- unlike a real line
 editor, this does not know a "command" is finished until an ENTER step
@@ -119,7 +141,15 @@ import sys
 from ._version import __version__
 from .ansi import ANSI
 from .driver import TargetDied, WaitForTimeout, run
-from .keys import parse_wait_for_step, parse_wait_step, print_key_list, warn_if_near_miss
+from .keys import (
+    parse_paste_step,
+    parse_resize_step,
+    parse_wait_for_next_step,
+    parse_wait_for_step,
+    parse_wait_step,
+    print_key_list,
+    warn_if_near_miss,
+)
 
 
 def load_steps(args):
@@ -161,6 +191,7 @@ def main():
     p.add_argument('--settle', type=float, default=1.5, help='extra seconds to wait after the last step (default: 1.5)')
     p.add_argument('--connect-wait', type=float, default=3.0, help='seconds to wait for a banner/prompt before the first step (default: 3.0)')
     p.add_argument('--raw', action='store_true', help='print output with ANSI escape sequences intact instead of stripped')
+    p.add_argument('--capture-out', metavar='FILE', help="also write the raw, unstripped pty capture to this file -- stdout output unchanged, and the file is written even when the run fails mid-way (the partial capture is the diagnostic)")
     p.add_argument('--answer-queries', action='store_true', help="answer terminal capability queries (\\e[>c, \\e[6n, ...) with canned 'normal terminal' replies -- a target that probes-then-fallbacks can behave differently with no reply, so repros silently diverge from a real terminal (default: off, queries go unanswered)")
     p.add_argument('--wait-for-timeout', type=float, default=10.0, metavar='SECONDS', help='how long a WAIT-FOR step may wait for its pattern before failing the run (default: 10)')
     p.add_argument('--rows', type=int, default=24, metavar='ROWS', help='terminal rows reported to the target through the pty (default: 24)')
@@ -209,11 +240,14 @@ def main():
     if not steps:
         p.error('no steps given (positionally or via --steps-file)')
     for step in steps:
-        # Malformed SLEEP/WAIT-FOR steps are usage errors, not literal
-        # text: typing 'SLEEP abc' into the target would be a silent
-        # footgun. Well-formed ones pass through untouched (the driver
-        # re-parses them, same pattern as encode_step).
+        # Malformed driver-side forms are usage errors, not literal text:
+        # typing 'SLEEP abc' or 'RESIZE abc 80' into the target would be
+        # a silent footgun. Well-formed ones pass through untouched (the
+        # driver re-parses them, same pattern as encode_step).
         for parse, what in ((parse_wait_step, 'wait step'),
+                            (parse_paste_step, 'PASTE step'),
+                            (parse_resize_step, 'RESIZE step'),
+                            (parse_wait_for_next_step, 'WAIT-FOR-NEXT step'),
                             (parse_wait_for_step, 'WAIT-FOR step')):
             try:
                 parse(step)
@@ -227,6 +261,7 @@ def main():
             env=env, verbose=args.verbose, answer_queries=args.answer_queries,
             wait_for_timeout=args.wait_for_timeout,
             rows=args.rows, cols=args.cols,
+            capture_path=args.capture_out,
         )
     except OSError as e:
         # argv[0] not found, not executable, etc. -- a real runtime failure,

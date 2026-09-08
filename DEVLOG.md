@@ -13,6 +13,66 @@ or a commit message instead.
 
 ---
 
+## 2026-09-08 — 0.3.7: step-vocabulary batch (PASTE, RESIZE, WAIT-FOR-NEXT, --capture-out, sleep/wait advisory)
+
+- **`PASTE:<text>`** — real bracketed-paste framing (`\e[200~` …
+  `\e[201~`) around a decode_raw payload, sent as one write: the only
+  way to express a multi-line paste in one steps-file line, and the
+  quiet way to hand a line editor a blob (newlines held literal, no
+  per-keystroke completion/redraw machinery set off). Empty payload is
+  a usage error. NOTES.md gains the honest-edges section (a target
+  without bracketed-paste mode enabled sees the framing as ignored
+  noise; `--steps-file` strips, positional args don't).
+- **`RESIZE <rows> <cols>`** — driver-side mid-run resize: TIOCSWINSZ
+  on the controller fd; the kernel delivers SIGWINCH to the pty's
+  foreground group itself. Verified live: `stty size` → 24 80 →
+  40 120 across the step. Validated as a usage error unless two
+  integers ≥ 1 (a 0-size tty is exactly what --rows/--cols prevent)
+  and ≤ 65535 (the winsize struct's 16-bit field).
+- **`WAIT-FOR-NEXT:<pattern>`** — WAIT-FOR's matching against only
+  output arriving after the step starts: `wait_for()` strips the
+  accumulator once at step start and searches from that offset, so the
+  echo of your own typing and a prompt that already contained the
+  marker can't satisfy it (NOTES.md's WAIT-FOR gotcha, fixed by form).
+  Documented honestly: exact to within ± one escape sequence that
+  straddles the boundary. Timeout/death messages label the form
+  WAIT-FOR-NEXT. No prefix ambiguity to worry about — `WAIT-FOR-NEXT:`
+  does not start with `WAIT-FOR:` — but the parse order and a
+  non-overlap test pin it anyway.
+- **`--capture-out FILE`** — the raw, unstripped capture written in
+  run()'s finally on EVERY exit path (clean finish, TargetDied,
+  WaitForTimeout) — the failure path is the point, the partial capture
+  is the diagnostic. `out` initialized before the try so a partial
+  capture always exists; an unwritable path warns to stderr instead of
+  masking the run's own exception. Stdout behavior unchanged.
+- **lowercase `sleep`/`wait` advisory** — NOTES.md's embarrassing
+  repro (the sleep that was never sent) as a stderr note at validation
+  time: lowercase spellings matching `^(sleep|wait)\s+\d` get pointed
+  at the `RAW:...\r` form that types it for real; uppercase (the
+  documented driver form) stays silent. Advisory only, same shape as
+  the near-miss warning it lives beside.
+- `--help` epilog extended to cover all six step forms and the new
+  flag; its "bulk paste != typing" bullet now points at PASTE instead
+  of claiming bracketed paste is out of scope. README Steps/Other
+  flags, man STEPS/OPTIONS/SYNOPSIS/EXAMPLES, `--list-keys` rows.
+- Tests 138 → 177: parse/encode units per new form; PASTE byte-exact
+  via `stty -icanon` + `od` (the RAW test's shape); RESIZE end to end
+  via `stty size` (direct + CLI); capture-out raw/partial/timeout
+  paths (direct + CLI, byte-exact); advisory present/absent;
+  WAIT-FOR-NEXT negative (pre-existing text must NOT match), positive,
+  and the typed-echo end-to-end discriminator (count ≥ 2 only if the
+  wait didn't end on the echo). 0.3.6 → 0.3.7 (pyproject,
+  `_version.py`, man `.TH`). Wheel round-trip + `nix flake check` +
+  `nix build` + `nix-build default.nix` verified before shipping.
+- Found while running the suite: the #37-pin CLI test
+  (`test_early_target_death_exits_1_with_capture_and_explanation`) is
+  flaky under load — ambient scheduling can stall the target past
+  every `poll()` check, so the #37 guard never fires and the run
+  exits 0. Pre-existing (measured 1/20 on unmodified main), untouched
+  by this PR; filed #58.
+
+---
+
 ## 2026-09-08 — the --ssh TODO item closes: verified against a genuinely different host
 
 - The "second host" turned out to have been reachable all along under

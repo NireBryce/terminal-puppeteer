@@ -1,8 +1,9 @@
 """The step vocabulary: named keys (TAB, ENTER, CTRL-<letter>, the
-arrow/navigation keys, ...), RAW:<escapes> byte strings, and the
-driver-side step forms (SLEEP <seconds>, WAIT-FOR:<pattern>) -- and how
-a step turns into the bytes actually sent to the pty, or into a wait the
-driver performs instead of a write. See README.md's Steps section and
+arrow/navigation keys, ...), RAW:<escapes> and PASTE:<text> byte strings,
+and the driver-side step forms (SLEEP <seconds>, RESIZE <rows> <cols>,
+WAIT-FOR:<pattern>, WAIT-FOR-NEXT:<pattern>) -- and how a step turns into
+the bytes actually sent to the pty, or into a wait/resize the driver
+performs instead of a write. See README.md's Steps section and
 --list-keys for the human-facing reference this module's data backs --
 both draw from the same SPECIAL_KEYS/CTRL_KEY_RE this module defines,
 not a second transcription of the same table.
@@ -48,6 +49,15 @@ ALL_KEY_NAMES = sorted(SPECIAL_KEYS) + [f'CTRL-{c}' for c in string.ascii_upperc
 # change meaning), so an opt-in form keeps both unambiguous. See issue #45.
 RAW_PREFIX = 'RAW:'
 
+# A PASTE:-prefixed step is the payload wrapped in real bracketed-paste
+# framing (\e[200~ ... \e[201~), sent as one write, with the payload run
+# through decode_raw() too -- the only way to express a multi-line paste
+# in one steps-file line. A plain multi-line write is NOT the same thing
+# (each embedded newline submits the line before it); with the framing, a
+# line editor that has enabled bracketed-paste mode treats the whole
+# payload as one paste and holds its newlines literal. See NOTES.md.
+PASTE_PREFIX = 'PASTE:'
+
 # decode_raw()'s single-character escapes -- the same set bind and `echo
 # -e` understand, minus the ones this vocabulary has no use for (\c, \0).
 RAW_CHAR_ESCAPES = {
@@ -65,9 +75,37 @@ WAIT_STEP_RE = re.compile(r'^(SLEEP|WAIT)\s+(.+)$', re.IGNORECASE)
 # WAIT-FOR:<pattern> -- drain until the ANSI-stripped output accumulated
 # so far matches: a literal substring, or a regex when wrapped in
 # /.../ (the regex form is what survives a line editor redrawing mid-
-# marker, where cursor-position escapes interleave with the characters
+# marker, where cursor-positioning escapes interleave with the characters
 # of the thing being waited for). See issue #46.
 WAIT_FOR_PREFIX = 'WAIT-FOR:'
+
+# WAIT-FOR-NEXT:<pattern> -- the same matching, but only over output that
+# arrives after the step starts. WAIT-FOR matches the whole transcript,
+# which includes the echo of your own typing (NOTES.md's gotcha) and any
+# prompt that already contained the marker; NEXT can't match either. No
+# prefix ambiguity to resolve: WAIT-FOR-NEXT: does not start with
+# WAIT-FOR: (the seventh character differs), so each parse function keys
+# on its own prefix alone.
+WAIT_FOR_NEXT_PREFIX = 'WAIT-FOR-NEXT:'
+
+# RESIZE <rows> <cols> -- a driver-side resize of the pty mid-run, not a
+# write: TIOCSWINSZ on the pty, then the kernel delivers SIGWINCH to the
+# target's foreground process group itself. --rows/--cols set the size
+# the pty starts with; this retimes one mid-run, for repros that are
+# size-sensitive in a way that only shows up after a resize.
+RESIZE_STEP_RE = re.compile(r'^RESIZE\s+(.+)$', re.IGNORECASE)
+
+# The winsize struct's fields are 16-bit unsigned shorts -- the ceiling
+# TIOCSWINSZ can actually carry, not an arbitrary one.
+WINSIZE_MAX = 0xFFFF
+
+# Lowercase 'sleep 30'/'wait 30' matches WAIT_STEP_RE (case-insensitive),
+# so it's a driver-side wait that sends nothing -- but it *reads* like a
+# command being typed, which is exactly the mistake NOTES.md documents.
+# This regex deliberately has no IGNORECASE: the uppercase spellings are
+# the documented driver form and get no advisory, only the
+# looks-like-a-typed-command shape does.
+TYPED_WAIT_RE = re.compile(r'^(sleep|wait)\s+\d')
 
 
 def decode_raw(text):
@@ -152,9 +190,87 @@ def parse_wait_for_step(step):
     return re.compile(re.escape(pattern.encode()))
 
 
+def parse_wait_for_next_step(step):
+    """WAIT-FOR-NEXT:<pattern> -> a compiled bytes regex matching only
+    the ANSI-stripped output that arrives after the step starts (the
+    driver measures where "after" begins; see driver.wait_for); None if
+    the step isn't a WAIT-FOR-NEXT step; ValueError for an empty pattern
+    or a bad regex. Pattern forms are exactly WAIT-FOR's."""
+    if not step.upper().startswith(WAIT_FOR_NEXT_PREFIX):
+        return None
+    pattern = step[len(WAIT_FOR_NEXT_PREFIX):]
+    if not pattern:
+        raise ValueError(f'{WAIT_FOR_NEXT_PREFIX}needs a pattern to wait for')
+    if len(pattern) > 1 and pattern.startswith('/') and pattern.endswith('/'):
+        try:
+            return re.compile(pattern[1:-1].encode())
+        except re.error as e:
+            raise ValueError(
+                f'{WAIT_FOR_NEXT_PREFIX} regex {pattern!r}: {e}'
+            ) from None
+    return re.compile(re.escape(pattern.encode()))
+
+
+def parse_paste_step(step):
+    """PASTE:<text> -> the payload text (in decode_raw's escape form --
+    the bytes it decodes to are the paste's contents); None if the step
+    isn't a PASTE step; ValueError for an empty payload. Validation is
+    the CLI's usage-error gate (same shape as WAIT-FOR's); encode_step
+    keeps its own identical guard for direct callers."""
+    if not step.upper().startswith(PASTE_PREFIX):
+        return None
+    payload = step[len(PASTE_PREFIX):]
+    if not payload:
+        raise ValueError(f'{PASTE_PREFIX}needs text to paste')
+    return payload
+
+
+def parse_resize_step(step):
+    """RESIZE <rows> <cols> -> the (rows, cols) tuple; None if the step
+    isn't a resize step; ValueError unless exactly two integers, each at
+    least 1 (a 0x0 tty is exactly what --rows/--cols exist to prevent)
+    and at most 65535 (the winsize struct field is a 16-bit short --
+    beyond it the driver's TIOCSWINSZ pack would raise struct.error, so
+    the ceiling is validated here where it can be a usage error)."""
+    m = RESIZE_STEP_RE.match(step)
+    if not m:
+        return None
+    parts = m.group(1).split()
+    if len(parts) != 2:
+        raise ValueError(
+            f'RESIZE takes exactly two integers (rows cols), e.g. '
+            f'RESIZE 40 120 -- got {m.group(1)!r}'
+        )
+    try:
+        rows, cols = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(
+            f'RESIZE rows/cols must be integers, e.g. RESIZE 40 120 -- '
+            f'got {m.group(1)!r}'
+        ) from None
+    if rows < 1 or cols < 1:
+        raise ValueError(f'RESIZE rows/cols must be at least 1, got {rows}x{cols}')
+    if rows > WINSIZE_MAX or cols > WINSIZE_MAX:
+        raise ValueError(
+            f'RESIZE rows/cols must be at most {WINSIZE_MAX} '
+            f'(16-bit winsize fields), got {rows}x{cols}'
+        )
+    return rows, cols
+
+
 def encode_step(step):
     if step.upper().startswith(RAW_PREFIX):
         return decode_raw(step[len(RAW_PREFIX):])
+    if step.upper().startswith(PASTE_PREFIX):
+        payload = step[len(PASTE_PREFIX):]
+        if not payload:
+            # Same guard parse_paste_step enforces at validation time --
+            # this one catches direct driver.run() callers that never
+            # went through the CLI.
+            raise ValueError(f'{PASTE_PREFIX}needs text to paste')
+        # One write: framing and payload together, so the target's
+        # bracketed-paste parser sees them as a single paste.
+        return b'\x1b[200~' + decode_raw(payload) + b'\x1b[201~'
     key = step.upper()
     if key in SPECIAL_KEYS:
         return SPECIAL_KEYS[key]
@@ -165,21 +281,39 @@ def encode_step(step):
 
 
 def warn_if_near_miss(step):
-    # A step that doesn't match any known key already got sent as literal
-    # text by encode_step, unchanged -- this only adds a heads-up to
-    # stderr for the case that's actually a typo'd key name, not intended
-    # literal text: 'CTRLC' (missing hyphen), 'ENTR', 'HOEM'. Advisory
-    # only, never blocks -- a false positive costs a stray warning line,
-    # not a broken run.
+    # Two advisory-only heads-ups, neither ever blocking or changing what
+    # encode_step sends -- a false positive costs a stray stderr line,
+    # not a broken run:
+    #
+    # 1. A step that doesn't match any known key already got sent as
+    #    literal text, unchanged -- this flags the case that's actually a
+    #    typo'd key name, not intended literal text: 'CTRLC' (missing
+    #    hyphen), 'ENTR', 'HOEM'.
+    # 2. A lowercase 'sleep 30'/'wait 30' IS a recognized step (WAIT_STEP_RE
+    #    is case-insensitive) -- a driver-side wait that sends nothing, when
+    #    it reads like a command being typed into the target. That's the
+    #    exact mistake NOTES.md's gotcha documents (the repro whose sleep
+    #    was never sent); the advisory points at the RAW: form that types
+    #    it for real. Uppercase spellings are the documented driver form
+    #    and stay silent.
     key = step.upper()
+    if TYPED_WAIT_RE.match(step):
+        print(
+            f"terminal-puppeteer.py: note: step {step!r} is a driver-side "
+            f"wait -- it sends nothing; to type that command in the target "
+            f"instead, use 'RAW:{step}\\r'",
+            file=sys.stderr,
+        )
     if key in SPECIAL_KEYS or CTRL_KEY_RE.match(key):
         return
     # The other step forms are their own vocabulary, matched exactly by
     # prefix/parse -- a near-miss warning against the *key* table is noise
     # for them ('RAW:CR' is three-quarters CR by difflib's math, and is
-    # not a typo of it). Malformed SLEEP/WAIT-FOR steps are a usage error
+    # not a typo of it). Malformed forms among them are a usage error
     # at validation time regardless, so nothing to warn about here either.
-    if (key.startswith(RAW_PREFIX) or key.startswith(WAIT_FOR_PREFIX)
+    if (key.startswith(RAW_PREFIX) or key.startswith(PASTE_PREFIX)
+            or key.startswith(WAIT_FOR_PREFIX)
+            or key.startswith(WAIT_FOR_NEXT_PREFIX)
             or WAIT_STEP_RE.match(step)):
         return
     match = difflib.get_close_matches(key, ALL_KEY_NAMES, n=1, cutoff=0.8)
@@ -202,8 +336,11 @@ def print_key_list():
         groups.setdefault(value, []).append(name)
     extra_rows = [
         ('RAW:<escapes>', "bind-style escapes, e.g. 'RAW:\\e[I' = \\x1b[I"),
+        ('PASTE:<text>', 'bracketed-paste wrap (\\e[200~ text \\e[201~), one write; escapes decoded'),
         ('SLEEP <seconds>', 'wait N seconds, sending nothing (driver-side)'),
+        ('RESIZE <rows> <cols>', 'resize the pty mid-run; the kernel SIGWINCHes the target'),
         ('WAIT-FOR:<pattern>', 'drain until stripped output matches (substring, or /regex/)'),
+        ('WAIT-FOR-NEXT:<pattern>', 'same, but only output arriving after this step (ignores echoes)'),
     ]
     width = max(
         [len(', '.join(names)) for names in groups.values()]

@@ -1,10 +1,10 @@
 """pty/subprocess mechanics: draining output, spawning and driving the
-target process, and the driver-side step forms that wait instead of
-write (SLEEP <seconds>, WAIT-FOR:<pattern>) plus the optional canned
-replies to terminal capability queries (--answer-queries). See
-terminal_puppeteer.cli for the CLI surface that calls these, and
-README.md's Timing/Exit behavior sections for what this is actually
-implementing and why.
+target process, and the driver-side step forms that act instead of write
+(SLEEP <seconds>, RESIZE <rows> <cols>, WAIT-FOR:<pattern>,
+WAIT-FOR-NEXT:<pattern>) plus the optional canned replies to terminal
+capability queries (--answer-queries). See terminal_puppeteer.cli for the
+CLI surface that calls these, and README.md's Timing/Exit behavior
+sections for what this is actually implementing and why.
 """
 import fcntl
 import os
@@ -19,7 +19,13 @@ import termios
 import time
 
 from .ansi import ANSI
-from .keys import encode_step, parse_wait_for_step, parse_wait_step
+from .keys import (
+    encode_step,
+    parse_resize_step,
+    parse_wait_for_next_step,
+    parse_wait_for_step,
+    parse_wait_step,
+)
 
 
 def _claim_target_tty():
@@ -149,7 +155,8 @@ def _exit_status_why(rc):
     return f'exited with status {rc}'
 
 
-def wait_for(controller, proc, seen, step, pattern, timeout, answered=None):
+def wait_for(controller, proc, seen, step, pattern, timeout, answered=None,
+             only_new=False):
     """Drain until the ANSI-stripped output accumulated so far matches
     `pattern`, or timeout. Matching the stripped stream by default is
     the point (issue #46): matching raw bytes is where a line editor
@@ -161,21 +168,33 @@ def wait_for(controller, proc, seen, step, pattern, timeout, answered=None):
     budget: with its last fd closed the pattern cannot arrive any
     more, so waiting is guaranteed futile. The pattern is re-checked
     before the liveness test, so a marker in the target's dying output
-    burst still matches normally."""
+    burst still matches normally.
+
+    only_new=True is the WAIT-FOR-NEXT form: the accumulator is stripped
+    once here at step start to record the boundary length, and the
+    pattern searches the stripped stream from that offset -- output that
+    arrived before the step (the first prompt, the echo of typing) cannot
+    satisfy the wait. Honest caveat: the boundary is a length on the
+    stripped stream, and one escape sequence can straddle it, so "only
+    what arrived after" is exact to within about one escape sequence at
+    the boundary. The timeout message reports only the new region too --
+    that's the part the step was actually watching."""
+    skip = len(ANSI.sub(b'', seen)) if only_new else 0
     deadline = time.time() + timeout
-    while not pattern.search(ANSI.sub(b'', seen)):
+    label = 'WAIT-FOR-NEXT' if only_new else 'WAIT-FOR'
+    while not pattern.search(ANSI.sub(b'', seen)[skip:]):
         remaining = deadline - time.time()
         if remaining <= 0:
-            tail = ANSI.sub(b'', seen)[-200:].decode('utf-8', 'replace')
+            tail = ANSI.sub(b'', seen)[skip:][-200:].decode('utf-8', 'replace')
             raise WaitForTimeout(
-                f'WAIT-FOR step {step!r}: no match within {timeout:g}s -- '
+                f'{label} step {step!r}: no match within {timeout:g}s -- '
                 f'last output seen (ANSI-stripped): {tail!r}'
             )
         seen += drain(controller, min(DRAIN_POLL, remaining), answered=answered)
         if proc.poll() is not None:
             raise TargetDied(
                 f'target {_exit_status_why(proc.returncode)} while '
-                f'WAIT-FOR step {step!r} was still waiting -- the '
+                f'{label} step {step!r} was still waiting -- the '
                 f'pattern cannot arrive any more',
                 seen,
             )
@@ -183,7 +202,8 @@ def wait_for(controller, proc, seen, step, pattern, timeout, answered=None):
 
 
 def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
-        answer_queries=False, wait_for_timeout=10.0, rows=24, cols=80):
+        answer_queries=False, wait_for_timeout=10.0, rows=24, cols=80,
+        capture_path=None):
     # The two pty fds are named controller/target (our end / the spawned
     # program's end) -- the same vocabulary README.md and NOTES.md use
     # for the thing being driven. pty.openpty()'s own parameter names
@@ -213,6 +233,9 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
         raise
     os.close(target)
     answered = {} if answer_queries else None
+    out = b''  # initialized here, not at first drain: the finally below
+    # writes the capture file on EVERY exit path through the try, and a
+    # partial capture is exactly what a failed run's file is for.
     try:
         out = drain(controller, connect_wait, answered=answered)
         for i, step in enumerate(steps):
@@ -238,15 +261,51 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
                 # (issue #44): keep draining, write no bytes.
                 out += drain(controller, wait, answered=answered)
                 continue
+            next_pattern = parse_wait_for_next_step(step)
+            if next_pattern is not None:
+                # Parsed before plain WAIT-FOR (no prefix overlap, but
+                # the ordering documents which form wins if one is ever
+                # added that shares a prefix).
+                out = wait_for(controller, proc, out, step, next_pattern,
+                               wait_for_timeout, answered=answered,
+                               only_new=True)
+                continue
             pattern = parse_wait_for_step(step)
             if pattern is not None:
                 out = wait_for(controller, proc, out, step, pattern,
                                wait_for_timeout, answered=answered)
                 continue
+            resize = parse_resize_step(step)
+            if resize is not None:
+                # A driver-side resize sends no bytes either: TIOCSWINSZ
+                # on the pty, and the kernel delivers SIGWINCH to the
+                # pty's foreground process group itself -- the same
+                # delivery a real terminal's resize produces. The pty's
+                # controller fd is our end of the same tty run() already
+                # sized at spawn.
+                new_rows, new_cols = resize
+                fcntl.ioctl(controller, termios.TIOCSWINSZ,
+                            struct.pack('HHHH', new_rows, new_cols, 0, 0))
+                out += drain(controller, step_delay, answered=answered)
+                continue
             os.write(controller, encode_step(step))
             out += drain(controller, step_delay, answered=answered)
         out += drain(controller, settle, answered=answered)
     finally:
+        # The raw, unstripped capture -- --raw/--capture-out's stdout
+        # stripping is the CLI's business, and a file that promises the
+        # raw capture must never second-guess it. Written on every exit
+        # path (clean finish, TargetDied, WaitForTimeout): the partial
+        # capture is exactly what a failed run's file is for. An
+        # unwritable path warns instead of raising, so a capture-file
+        # problem can't mask the run's own exception mid-propagation.
+        if capture_path is not None:
+            try:
+                with open(capture_path, 'wb') as f:
+                    f.write(out)
+            except OSError as e:
+                print(f'terminal-puppeteer: warning: could not write '
+                      f'capture file {capture_path!r}: {e}', file=sys.stderr)
         # Runs on a clean finish same as on a Ctrl+C/exception mid-drain --
         # without this, interrupting the tool itself orphans the target
         # process instead of the "only ever terminates the target" README

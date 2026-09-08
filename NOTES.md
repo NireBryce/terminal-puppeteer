@@ -156,10 +156,34 @@ saw each embedded newline as "run whatever's on this line right now," so
 a multi-line `function foo { ... }` arrived as several syntactically
 broken partial commands — `unexpected end of file`, `unexpected token`,
 that kind of failure, not an obvious "you sent this wrong." If a repro
-needs to define something multi-line, write it to a file first (a
-separate step, or out-of-band before running this tool at all) and use a
-single step that sources it — `source /path/to/file.sh` — rather than
-typing the file's contents as steps.
+needs to define something multi-line, either use the `PASTE:` step (next
+section), or write it to a file first (a separate step, or out-of-band
+before running this tool at all) and use a single step that sources it —
+`source /path/to/file.sh` — rather than typing the file's contents as
+steps.
+
+## `PASTE:` is the honest way to hand a line editor a multi-line blob
+
+The framing the bulk-paste gotcha above is missing. `PASTE:<text>` wraps
+the payload in the real bracketed-paste markers (`\e[200~` … `\e[201~`)
+and sends the whole thing as one write — so a line editor that has
+*enabled bracketed-paste mode* (readline, zle, ble.sh all do; you can
+watch for the `\e[?2004h` they send at prompt time) treats the payload
+as one paste instead of a burst of keystrokes: embedded newlines sit
+literal in the edit buffer instead of submitting each line early, and
+the editor skips the per-keystroke machinery — completion triggers,
+autosuggestions, syntax-highlight redraws — that typing the same
+characters one step at a time would set off. For repros that need a
+multi-line definition *inside* the session under test, this is both the
+correct-shape way and the quiet way; the payload takes the same
+`bind`-style escapes as `RAW:` (`\e`, `\t`, `\xHH`, …), so tabs and
+escapes inside the blob survive. Two honest edges: a target that never
+enabled bracketed-paste mode just sees stray framing bytes (usually
+ignored) and the payload typed in plainly — newlines submitting — so
+`PASTE:` is not magic against a target that doesn't speak it; and
+remember `--steps-file` strips surrounding whitespace from each line, so
+a payload whose trailing spaces matter should come from a positional
+argument, which is preserved exactly.
 
 ## The bug you're chasing can catch your own diagnostic commands too
 
