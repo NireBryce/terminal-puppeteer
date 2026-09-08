@@ -16,6 +16,14 @@ considered and consciously deferred live in Backlog, below.)
 Inherited from PLAN.md when it retired. Not committed to; recorded so
 the reasoning isn't lost.
 
+- `--redact` for captures and `-v` step echoes — IF ever built:
+  strictly opt-in, narrow pattern list (ghp_/AKIA/xoxb/Bearer, JWT
+  shape), loud `[REDACTED:kind]` markers, never silent, never
+  default. The tool's contract is that the capture doesn't lie
+  (NOTES.md's SOH gotcha), and redaction doesn't un-leak a secret
+  that already crossed the pty — the real fix is keeping secrets out
+  of steps (NOTES.md's "transcript content" section), which is why
+  this stays unbuilt.
 - `--json` events log (steps sent, replies answered, timings) for
   machine-readable run reports.
 - Mouse-event injection (SGR encoding) for TUI repros.
