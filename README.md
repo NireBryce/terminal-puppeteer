@@ -92,8 +92,9 @@ Exactly one of these, always:
   extra `ssh` args (repeatable) — e.g. `--ssh-arg=-o --ssh-arg=BatchMode=yes`
   for a non-interactive auth check, or `--ssh-arg=-o --ssh-arg=ConnectTimeout=5`
   (the `=` form is required: argparse reads a bare `-o` as the next option).
-  Only valid alongside `--ssh`. Verified end to end over a real ssh transport
-  (see NOTES.md for the ssh-specific gotchas: latency, pacing, interrupt
+  Only valid alongside `--ssh`. Verified end to end over a real ssh
+  transport — both loopback and a genuinely different machine (see
+  NOTES.md for the ssh-specific gotchas: latency, pacing, interrupt
   delivery).
 - **`--cmd COMMAND`** — any command, shell-quoted as one string and split
   with `shlex.split` (so quote it the way you'd type it: `--cmd 'bash -i'`,
