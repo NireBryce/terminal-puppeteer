@@ -211,6 +211,43 @@ compound one-liners with heavy quoting, and consider writing anything
 complex to a file on the target first and sourcing it, rather than typing
 it live.
 
+## A credential typed as a step is transcript content
+
+Everything a step contains ends up in the record: `-v` echoes every
+step to stderr as it is sent, the capture (stdout, and any
+`--capture-out` file) contains the pty's echo of it, positional steps
+sit in your own shell history as argv, and `--steps-file` paths land
+in whatever is versioned. A credential pasted as a step — `export
+API_TOKEN=…` ENTER — is now in scrollback, history, and any capture
+file, forever, in plaintext. `--screen` doesn't help (it renders the
+same session), and a future redaction flag (backlog) wouldn't help
+either: the secret already crossed the pty to the target — that's
+what typing it there *means*.
+
+The better shape is for no step to ever contain the secret: hand the
+*target* what it needs out-of-band, so the tool only ever drives
+already-authenticated sessions. In rough order of preference:
+
+- **Inherited environment.** The tool passes the launcher's full
+  environment through to the target, so a secret exported in the
+  shell (or devShell) that launches this tool reaches the target
+  without any step containing it — and without the agent running the
+  tool ever seeing the plaintext. (`--env` exists for *non-secret*
+  additions; its values sit in the tool's own argv, visible in `ps`
+  to other local users — don't put secrets there.)
+- **Target-side state.** A provisioned config, keyfile, or profile on
+  the target machine — the repro then just *uses* the session like a
+  human who is already logged in would.
+- **Encrypted at rest, exposed out-of-band** (sops, agenix, your
+  deploy secret manager) for secrets that have to live anywhere near
+  a workflow. This tool deliberately ships no vault and no nudge
+  mechanism beyond this paragraph: keep your secrets in *your*
+  encrypted-at-rest store and keep them out of your steps.
+
+For byte-level debugging the capture stays faithful by design — which
+is exactly why the fix belongs before the step list, not after the
+capture.
+
 ## Fetch large or exact captures out-of-band when you can
 
 For anything beyond a few lines, or anything where exact bytes matter,

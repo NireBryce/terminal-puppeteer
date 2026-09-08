@@ -556,7 +556,19 @@ avoids some of this for programs that check
 before deciding whether to probe at all \-\- in the target's environment
 from the moment it starts, unlike the same variable set via an early
 step, which still races whatever probing happens before that step
-lands. A byte that renders invisible in a terminal transcript (a
+lands.
+.PP
+A credential typed as a step is transcript content: \fB\-v\fR echoes
+steps to standard error, the capture (standard output and any
+\fB\-\-capture\-out\fR file) contains the pty's echo, and positional
+steps sit in shell history as argv. Hand secrets to the target
+out\-of\-band instead \-\- the launcher's environment is inherited
+whole (\fB\-\-env\fR values, by contrast, sit in this tool's own argv,
+visible in \fBps\fR), or use target-side config \-\- and keep them
+encrypted at rest in your own secret store. See
+.B NOTES.md
+in the project repository for the fuller account. A byte that renders
+invisible in a terminal transcript (a
 control byte with no glyph) is still there and can still matter; when a
 captured value needs to be byte-exact, pipe it through \fBod\fR(1) rather
 than trusting what printed. See

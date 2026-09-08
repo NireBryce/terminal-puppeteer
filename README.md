@@ -243,6 +243,13 @@ some terminal-capability probing that a program checking `$TERM` might
 otherwise do on startup (see NOTES.md's ble.sh gotcha) — a `'export
 TERM=dumb' ENTER` step sets the same variable, but only after the shell
 is already up and reading input, racing whatever probe happens first.
+One caveat for sensitive values: `--env`'s arguments sit in this tool's
+own argv, visible in `ps` to other local users — a secret is better off
+in the launching shell's environment, which the target inherits anyway.
+More generally: a credential typed as a step is transcript content
+(stderr echoes, captures, capture files) — see NOTES.md's
+"transcript content" gotcha for the out-of-band shapes that keep
+secrets out of steps entirely.
 
 ## Timing
 
