@@ -49,6 +49,7 @@ piped.
     terminal-puppeteer.py --cmd 'tmux attach -t work' 'echo hi' ENTER
     terminal-puppeteer.py --ssh HOST --settle 5 'sleep 3' ENTER
     terminal-puppeteer.py --ssh HOST --steps-file repro.txt
+    echo 'echo hi' ENTER | terminal-puppeteer.py --cmd 'bash -i' --repl
     terminal-puppeteer.py --ssh HOST --env TERM=dumb 'echo hi' ENTER
     terminal-puppeteer.py --list-keys
 
@@ -127,6 +128,22 @@ a crash, an unwelcome startup, a typo'd target -- the run fails loudly
 status and the steps never sent) instead of typing into a pty nobody is
 reading.
 
+Interactive sessions: --repl inverts the one-shot model. It starts the
+target, reports whatever the connect-wait window caught (usually the
+banner/prompt), and then reads the same step vocabulary from stdin one
+line at a time -- '#' lines are comments, ':quit' or EOF ends the
+session (a final settle drain, then the target is terminated). After
+each step it prints just the NEW output since the last one (stripped
+unless --raw) followed by a '<< DONE' sentinel line; a failed step
+(target death, WAIT-FOR timeout) prints its fresh output and
+'<< DEAD <why>' instead. Exactly one response per step line, always,
+and the exit code says which way the session ended (0 for :quit/EOF,
+1 for DEAD) -- so a driving agent can send a line, read the response,
+and decide the next line without ever waiting on a sentinel that won't
+come. The Session class behind it (terminal_puppeteer.session: start/
+send_step/expect/resize/close) is importable for the same style of use
+from Python.
+
 One advisory note lands on stderr after a run: if any BEL (\x07) bytes
 came back from the target -- invisible in both stripped and raw output,
 but the standard "unbound key"/alert signal a whole class of bugs
@@ -150,6 +167,7 @@ from .keys import (
     print_key_list,
     warn_if_near_miss,
 )
+from .session import Session
 
 
 def load_steps(args):
@@ -165,6 +183,114 @@ def load_steps(args):
             if f is not sys.stdin:
                 f.close()
     return steps
+
+
+def validate_step(p, step):
+    # Malformed driver-side forms are usage errors, not literal text:
+    # typing 'SLEEP abc' or 'RESIZE abc 80' into the target would be a
+    # silent footgun. Well-formed ones pass through untouched (the
+    # driver re-parses them, same pattern as encode_step). Shared by the
+    # one-shot validation loop and --repl's per-line validation -- the
+    # same vocabulary must be rejected the same way in both, or the
+    # REPL would accept steps the one-shot run rejects.
+    for parse, what in ((parse_wait_step, 'wait step'),
+                        (parse_paste_step, 'PASTE step'),
+                        (parse_resize_step, 'RESIZE step'),
+                        (parse_wait_for_next_step, 'WAIT-FOR-NEXT step'),
+                        (parse_wait_for_step, 'WAIT-FOR step')):
+        try:
+            parse(step)
+        except ValueError as e:
+            p.error(f'{what} {step!r}: {e}')
+    warn_if_near_miss(step)
+
+
+def maybe_note_bels(p, args, output):
+    # Counted on the stream being printed, on purpose: a \x07
+    # terminating an OSC sequence (\x1b]0;title\x07) is part of that
+    # sequence, not a bell -- the standalone BELs this counts are the
+    # ones that survive stripping untouched. BEL is not part of an ANSI
+    # escape sequence, so stripping leaves it -- and it renders as
+    # nothing, --raw included. Advisory only (same shape as the
+    # near-miss warning): programs bell for reasons a given repro may
+    # not care about, but a bell is the visible symptom of a whole
+    # class of unbound-key/alert behavior, and without this line a
+    # capture of a bell-heavy session looks identical to a bell-free
+    # one. See issue #47.
+    printed = output if args.raw else ANSI.sub(b'', output)
+    bels = printed.count(b'\x07')
+    if bels:
+        print(
+            f'{p.prog}: note: {bels} BEL (0x07) byte'
+            f'{"s" if bels != 1 else ""} received from the target',
+            file=sys.stderr,
+        )
+
+
+def drive_repl(p, args, argv, env):
+    """The --repl loop: the same step vocabulary as a one-shot run, read
+    line-by-line from stdin so an agent can pace itself on the target's
+    actual responses -- send a line, read what came back, decide the
+    next line. '#' lines are comments, ':quit' or EOF ends the session
+    (a final --settle drain, then close). After each step it prints just
+    the NEW output since the last one (stripped unless --raw), then a
+    '<< DONE' sentinel; a failed step (target death, WAIT-FOR timeout)
+    prints its fresh output and '<< DEAD <why>' instead, and exits 1 --
+    exactly one response per step line, so a consumer never waits on a
+    sentinel that won't come. Returns the exit code; the Session in the
+    finally is what keeps the target reaped and fds closed on every
+    path out of here."""
+    session = Session(
+        argv, step_delay=args.step_delay, settle=args.settle,
+        connect_wait=args.connect_wait, env=env, verbose=args.verbose,
+        answer_queries=args.answer_queries,
+        wait_for_timeout=args.wait_for_timeout,
+        rows=args.rows, cols=args.cols, capture_path=args.capture_out,
+    )
+    out = sys.stdout.buffer
+
+    def emit(delta):
+        text = delta if args.raw else ANSI.sub(b'', delta)
+        if text:
+            out.write(text)
+            if not text.endswith(b'\n'):
+                out.write(b'\n')
+
+    try:
+        try:
+            session.start()
+        except OSError as e:
+            p.exit(1, f'{p.prog}: error: could not start {argv[0]!r}: '
+                      f'{e.strerror or e}\n')
+        # The startup capture -- whatever the connect-wait window caught,
+        # usually the banner/prompt -- reports before the first step is
+        # read, so a driver sees where it's typing into.
+        emit(session.output)
+        out.write(b'<< DONE\n')
+        out.flush()
+        for line in sys.stdin:
+            step = line.strip()
+            if not step or step.startswith('#'):
+                continue
+            if step == ':quit':
+                break
+            validate_step(p, step)
+            mark = len(session.output)
+            try:
+                session.send_step(step)
+            except (TargetDied, WaitForTimeout) as e:
+                emit(session.output[mark:])
+                out.write(f'<< DEAD {e}\n'.encode())
+                out.flush()
+                return 1
+            emit(session.output[mark:])
+            out.write(b'<< DONE\n')
+            out.flush()
+        session.drain(args.settle)
+        return 0
+    finally:
+        session.close()
+        maybe_note_bels(p, args, session.output)
 
 
 def main():
@@ -187,6 +313,7 @@ def main():
     target.add_argument('--cmd', metavar='COMMAND', help='shell-quoted command to run under a pty, e.g. \'bash -i\' or \'tmux attach -t work\'')
     p.add_argument('steps', nargs='*', help='literal text or a named key (TAB, ENTER, CTRL-C, ...) -- see --list-keys')
     p.add_argument('--steps-file', help="read additional steps, one per line, from this file ('-' for stdin)")
+    p.add_argument('--repl', action='store_true', help="interactive: read steps from stdin one line at a time ('#' comments, ':quit' or EOF to finish), printing each step's new output then a '<< DONE' sentinel line ('<< DEAD <why>' if the step fails) -- no positional steps or --steps-file")
     p.add_argument('--step-delay', type=float, default=1.5, help='seconds to wait for output after each step (default: 1.5)')
     p.add_argument('--settle', type=float, default=1.5, help='extra seconds to wait after the last step (default: 1.5)')
     p.add_argument('--connect-wait', type=float, default=3.0, help='seconds to wait for a banner/prompt before the first step (default: 3.0)')
@@ -233,6 +360,16 @@ def main():
             key, _, value = kv.partition('=')
             env[key] = value
 
+    if args.repl:
+        # The REPL's input IS stdin -- steps would collide with it, so
+        # both other step sources are refused rather than silently
+        # concatenated or raced.
+        if args.steps:
+            p.error('--repl reads steps from stdin as it goes; pass no positional steps')
+        if args.steps_file:
+            p.error('--repl reads steps from stdin as it goes; --steps-file does not apply')
+        sys.exit(drive_repl(p, args, argv, env))
+
     try:
         steps = load_steps(args)
     except OSError as e:
@@ -240,20 +377,7 @@ def main():
     if not steps:
         p.error('no steps given (positionally or via --steps-file)')
     for step in steps:
-        # Malformed driver-side forms are usage errors, not literal text:
-        # typing 'SLEEP abc' or 'RESIZE abc 80' into the target would be
-        # a silent footgun. Well-formed ones pass through untouched (the
-        # driver re-parses them, same pattern as encode_step).
-        for parse, what in ((parse_wait_step, 'wait step'),
-                            (parse_paste_step, 'PASTE step'),
-                            (parse_resize_step, 'RESIZE step'),
-                            (parse_wait_for_next_step, 'WAIT-FOR-NEXT step'),
-                            (parse_wait_for_step, 'WAIT-FOR step')):
-            try:
-                parse(step)
-            except ValueError as e:
-                p.error(f'{what} {step!r}: {e}')
-        warn_if_near_miss(step)
+        validate_step(p, step)
 
     try:
         out = run(
@@ -286,24 +410,7 @@ def main():
         p.exit(1, f'{p.prog}: error: {e}\n')
     if not args.raw:
         out = ANSI.sub(b'', out)
-    # Counted on the stripped stream on purpose: a \x07 terminating an OSC
-    # sequence (\x1b]0;title\x07) is part of that sequence, not a bell --
-    # the standalone BELs this counts are the ones that survive stripping
-    # untouched.
-    bels = out.count(b'\x07')
-    if bels:
-        # BEL is not part of an ANSI escape sequence, so stripping leaves
-        # it -- and it renders as nothing, --raw included. Advisory only
-        # (same shape as the near-miss warning): programs bell for reasons
-        # a given repro may not care about, but a bell is the visible
-        # symptom of a whole class of unbound-key/alert behavior, and
-        # without this line a capture of a bell-heavy session looks
-        # identical to a bell-free one. See issue #47.
-        print(
-            f'{p.prog}: note: {bels} BEL (0x07) byte'
-            f'{"s" if bels != 1 else ""} received from the target',
-            file=sys.stderr,
-        )
+    maybe_note_bels(p, args, out)
     sys.stdout.buffer.write(out)
     sys.stdout.buffer.write(b'\n')
 

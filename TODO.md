@@ -14,6 +14,15 @@ path and pinned as the opt-in `SecondHostSshTests`, which run wherever
 
 ## Done
 
+- [x] **Session class + `--repl` interactive mode** — 0.4.0
+  (2026-09-08). `Session` (session.py: start/send_step/expect/resize/
+  close) owns the pty mechanics and the whole per-step dispatch;
+  `driver.run()` is a thin loop over it — one code path, no drift, all
+  old import paths kept. `--repl` reads the same vocabulary from
+  stdin a line at a time and answers each with the new output plus a
+  `<< DONE` sentinel (`<< DEAD <why>` + exit 1 on a failed step) —
+  one response per step, always. Details in DEVLOG 2026-09-08.
+
 - [x] **Step-vocabulary batch** — 0.3.7 (2026-09-08). `PASTE:<text>`
   (real bracketed-paste framing, one write), `RESIZE <rows> <cols>`
   (TIOCSWINSZ; the kernel SIGWINCHes the foreground group),

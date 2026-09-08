@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-08" "terminal-puppeteer 0.3.7" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-08" "terminal-puppeteer 0.4.0" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -16,6 +16,7 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-raw ]
 .RB [ \-\-capture\-out " " \fIFILE\fR]
 .RB [ \-\-answer\-queries ]
+.RB [ \-\-repl ]
 .RB [ \-v ]
 .RI [ STEP " ...]"
 .br
@@ -32,6 +33,7 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-raw ]
 .RB [ \-\-capture\-out " " \fIFILE\fR]
 .RB [ \-\-answer\-queries ]
+.RB [ \-\-repl ]
 .RB [ \-v ]
 .RI [ STEP " ...]"
 .br
@@ -291,6 +293,34 @@ the bytes exactly as they came off the pty. Written on every exit path:
 a run that fails mid-way (target death, WAIT-FOR timeout) still leaves
 the partial capture in the file, which is the diagnostic.
 .TP
+.B \-\-repl
+Interactive mode: instead of taking the whole step list up front, start
+the target, report whatever the connect-wait window caught (usually the
+banner or prompt), and then read the same step vocabulary from standard
+input one line at a time. Lines starting with
+.B #
+are comments; a line of just
+.B :quit
+or end of input ends the session (a final
+.B \-\-settle
+drain, then the target is terminated). After each step it prints just
+the NEW output since the last one \-\- stripped unless
+.BR \-\-raw \-\- followed by a
+.B << DONE
+sentinel line; a failed step (target death, WAIT-FOR timeout) prints
+its fresh output and
+.B "<< DEAD <why>"
+instead. Exactly one response per step line, always, and the exit
+status says which way the session ended (0 for :quit/EOF, 1 for DEAD),
+so a driving agent can send a line, read the response, and decide the
+next line without waiting on a sentinel that will not come. Takes no
+positional steps and no
+.BR \-\-steps\-file ;
+all other flags apply. The
+.B Session
+class behind it (terminal_puppeteer.session: start, send_step, expect,
+resize, close) is importable for the same style of use from Python.
+.TP
 .B \-\-answer\-queries
 Answer terminal capability queries (device attributes, cursor position,
 XTVERSION, kitty\-keyboard protocol, OSC 11 background color, termcap
@@ -440,6 +470,17 @@ typing the contents entirely:
 .EX
 terminal-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
 terminal-puppeteer.py \-\-cmd 'bash \-i' 'PASTE:foo() {\een  echo inside\een}\eenfoo' ENTER
+.EE
+.RE
+.PP
+Interactive: feed steps a line at a time and pace on each response (see
+.B \-\-repl
+in
+.BR OPTIONS ):
+.PP
+.RS
+.EX
+echo 'echo hi' ENTER | terminal-puppeteer.py \-\-cmd 'bash \-i' \-\-repl
 .EE
 .RE
 .PP

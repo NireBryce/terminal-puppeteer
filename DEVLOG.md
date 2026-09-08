@@ -13,6 +13,46 @@ or a commit message instead.
 
 ---
 
+## 2026-09-08 — 0.4.0: Session class + --repl interactive mode
+
+- **session.py: `Session` owns the pty/subprocess mechanics and the
+  whole per-step dispatch** — start/send_step/expect/resize/drain/
+  close, with drain(), QUERY_RESPONDERS, TargetDied, WaitForTimeout,
+  and the spawn helpers moved in from driver.py. driver.run() is now a
+  thin loop over it, passing the i-of-N narrative as the death
+  message — one code path for one-shot and interactive, no drift to
+  accumulate. All the old import paths kept (driver.drain/
+  TargetDied/WaitForTimeout work exactly as before); the fd-leak/
+  reap/no-orphan semantics are preserved and now pinned on the class
+  directly, not just observed through run().
+- **`--repl`** — the same step vocabulary read from stdin one line at
+  a time: '#' comments, ':quit'/EOF = settle + close, startup capture
+  reported before the first step. After each step: just the NEW
+  output since the last one (stripped unless --raw), then `<< DONE`;
+  a failed step prints its fresh output and `<< DEAD <why>` and exits
+  1. Exactly one response per step line, always — a driving agent
+  never waits on a sentinel that won't come. Refuses positional steps
+  and --steps-file (stdin is the step stream); every other flag
+  applies. Delta cutting has WAIT-FOR-NEXT's honest boundary caveat,
+  one level up.
+- DEAD covers both TargetDied and WaitForTimeout: protocol totality
+  beats taxonomy — a consumer keys on the sentinel, not the exception
+  class; the exit code still distinguishes (0 clean, 1 DEAD).
+- Tests 177 → 198: SessionTests (dispatch, expect/only_new/timeout,
+  resize, reap, fd leaks including failed start, idempotent close,
+  capture-path) and ReplTests (sentinel counts, EOF/:quit, comments,
+  DEAD with deterministic death ordering — the target exits after a
+  *completed* step, so the #58 startup race can't bite — malformed
+  step as usage error, flag conflicts, --raw deltas, capture-out).
+  The existing suite is untouched and green through the refactor.
+- Docs: README's "Interactive mode" section, man SYNOPSIS/OPTIONS/
+  EXAMPLES, --help epilog. 0.3.7 → 0.4.0 (a new interaction model
+  justifies the minor bump; pyproject, `_version.py`, man `.TH`).
+  Wheel round-trip + `nix flake check` + `nix build` +
+  `nix-build default.nix` verified before shipping.
+
+---
+
 ## 2026-09-08 — 0.3.7: step-vocabulary batch (PASTE, RESIZE, WAIT-FOR-NEXT, --capture-out, sleep/wait advisory)
 
 - **`PASTE:<text>`** — real bracketed-paste framing (`\e[200~` …
