@@ -13,6 +13,30 @@ or a commit message instead.
 
 ---
 
+## 2026-09-08 — the --ssh TODO item closes: verified against a genuinely different host
+
+- The "second host" turned out to have been reachable all along under
+  its other name: `ts-tenacity` (tailscale MagicDNS) pointed at the
+  right machine but filtered port 22, while `nire-tenacity.local`
+  (mDNS, same box's LAN address) answered immediately with the keys
+  that were already set up. `hostname` confirms it's a different
+  machine from this one (`nire-cube`), its own sshd, LAN network path.
+- The full battery through the tool, first try on this host:
+  round-trip execution, `stty size` → `24 80`, job control
+  (`flags=himBHs`), CTRL-C killing a remote `sleep` (status 130 —
+  notably no delivery race here, unlike loopback), `exit 3` finale
+  shape, `--ssh-arg` passthrough. Everything typed was read-only
+  (echo/stty) inside a `bash --norc` session.
+- Pinned as `SecondHostSshTests` (round-trip/window/job-control +
+  interrupt), gated on `TERMINAL_PUPPETEER_SSH_HOST`: CI has no second
+  host, and an unconfigured run must not probe anyone's machines —
+  set the variable to any reachable host with key auth and the tests
+  verify *your* path. Suite 138 → 140 (both skip unconfigured).
+- No version bump: tests and docs only. TODO.md's Open section is now
+  empty; the DONE entry carries the details.
+
+---
+
 ## 2026-09-07 — 0.3.6: CSI/DCS stripping over a real ssh transport; the --ssh TODO half-closes
 
 - **ansi: private-marker CSI and DCS sequences are stripped now.** The

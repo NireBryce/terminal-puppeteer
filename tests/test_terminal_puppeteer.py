@@ -1004,15 +1004,19 @@ class FishIntegrationTests(unittest.TestCase):
 
 @unittest.skipUnless(_LOCAL_SSH, "passwordless localhost ssh not available")
 class SshTransportTests(unittest.TestCase):
-    """The live --ssh verification, kept as tests (the TODO.md item,
-    narrowed: a real ssh transport -- `ssh -tt`, remote pty allocation,
-    remote shell over the protocol -- against the local sshd; a genuinely
-    different host remains out of scope, see TODO.md). Targets a plain
-    remote `bash --norc --noprofile -i` on purpose: the point here is the
+    """The live --ssh verification, kept as tests: a real ssh transport
+    -- `ssh -tt`, remote pty allocation, remote shell over the protocol
+    -- against the local sshd (the genuinely-different-host case is
+    SecondHostSshTests below). Targets a plain remote
+    `bash --norc --noprofile -i` on purpose: the point here is the
     transport, not the author's dotfiles (whose ble.sh redraw storm eats
     keystrokes on its own schedule -- NOTES.md)."""
 
     ARGV = ["ssh", "-tt", "localhost", "bash", "--norc", "--noprofile", "-i"]
+
+    # positional tail for driver.run: step_delay, settle, connect_wait.
+    def _delays(self):
+        return (1.5, 2.5, 4.0)
 
     def test_ssh_transport_round_trip_window_size_and_job_control(self):
         # The three battery checks that motivated the TODO item, over
@@ -1047,6 +1051,45 @@ class SshTransportTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn(b"SSHARG-OK", result.stdout)
+
+
+@unittest.skipUnless(
+    os.environ.get("TERMINAL_PUPPETEER_SSH_HOST"),
+    "set TERMINAL_PUPPETEER_SSH_HOST (passwordless key auth assumed) "
+    "to verify the tool against a genuinely different machine",
+)
+class SecondHostSshTests(unittest.TestCase):
+    """The half of the --ssh verification loopback can't cover: a
+    different machine's sshd, OS, and network path. Opt-in via the
+    environment rather than skipped forever -- CI has no second host,
+    and an unconfigured run must not probe anyone's machines. Everything
+    typed is read-only (echo/stty) and the session is bash --norc, so
+    the target machine sees a few log lines and nothing else."""
+
+    HOST = os.environ.get("TERMINAL_PUPPETEER_SSH_HOST", "")
+
+    def test_second_host_round_trip_window_size_and_job_control(self):
+        out = driver.run(
+            ["ssh", "-tt", self.HOST, "bash", "--norc", "--noprofile", "-i"],
+            ["echo SECONDHOST-$((40+2))", "ENTER", "stty size", "ENTER",
+             "echo flags=$-", "ENTER"],
+            1.5, 2.5, 5.0,
+        )
+        self.assertIn(b"SECONDHOST-42", out)
+        self.assertIn(b"24 80", out)
+        flags = re.search(rb"flags=([a-zA-Z]+)", out)
+        self.assertIsNotNone(flags)
+        self.assertIn(b"m", flags.group(1))
+
+    def test_second_host_interrupt_reaches_the_remote_foreground_job(self):
+        out = driver.run(
+            ["ssh", "-tt", self.HOST, "bash", "--norc", "--noprofile", "-i"],
+            ["RAW:sleep 3\\r", "WAIT-FOR:/sleep 3[\\r\\n]/", "SLEEP 0.5",
+             "CTRL-C", "SLEEP 1", "echo result-$?", "ENTER",
+             "WAIT-FOR:/result-1[0-9][0-9]/"],
+            1.5, 3.0, 5.0,
+        )
+        self.assertIn(b"result-130", out)
 
     def _delays(self):
         # positional tail for driver.run: step_delay, settle,
