@@ -6,13 +6,15 @@ the program actually did — instead of the one-shot, no-tty view a normal
 tool call gets.
 
 What comes back is a flat, in-order byte stream — everything the pty
-produced, ANSI stripped by default — not a rendered screen with a cursor
-position. That's the right shape for a line-oriented shell/REPL session,
-which is what this tool targets; it's the wrong shape for a full-screen
-program like `vim` or a debugger, where you actually want the current
-screen contents. Most similar tools (see Alternatives, below) take that
-screen-reading approach instead — reach for one of those if that's what
-you're driving.
+produced, ANSI stripped by default (`--raw` to keep them) — not a
+rendered screen with a cursor position. That's the right shape for a
+line-oriented shell/REPL session, which is what this tool targets; for
+full-screen programs like `vim` or a debugger you actually want the
+current screen contents, and `--screen` (Viewing the output, below)
+renders exactly that — up to its documented, layout-only subset. Most
+similar tools (see Alternatives, below) take that screen-reading
+approach instead — reach for one of those if that's what you're
+driving.
 
 Built for reproducing bugs that only exist in a live, human-typed terminal
 session: `$-` not containing `i` because no pty was allocated, a
@@ -296,6 +298,38 @@ The `Session` class behind it (`terminal_puppeteer.session`: `start`/
 `send_step`/`expect`/`resize`/`close`) is importable for the same style
 of use from Python, and `driver.run()` is a thin loop over it — one
 code path for both, not two that drift.
+
+## Viewing the output: `--screen`
+
+`--screen` renders the final capture as an actual terminal grid
+(sized by `--rows`/`--cols`) instead of a byte stream — the thing that
+makes captures legible at a glance when a live line editor is doing
+what live line editors do. zsh's `eecho hi` backspace artifact renders
+as `echo hi`; ble.sh's `[▽][▶]…` cursor-glyph probe renders as the
+plain bracketed text it actually is; a redraw-heavy prompt shows its
+final state once, not four interleaved copies.
+
+It is a **layout renderer, not a terminal emulator** — the honest
+boundary: it implements the C0/CSI subset that determines *where
+characters sit* (cursor positioning, erase, character/line
+insert-delete, scrolling, scroll regions — the parts editor redraws
+depend on) and parse-and-discards the rest. Colors and modes are not
+state it keeps; unrecognized-but-grammatical sequences discard
+invisibly; a truncated sequence renders nothing, which is what a real
+terminal shows while still waiting for the sequence to finish; every
+codepoint occupies one cell, wide glyphs included; the
+alternate-screen buffer is not modeled. Output is one line per screen
+row, trailing whitespace and empty bottom rows trimmed.
+
+Two consequences worth internalizing: `--screen` answers *layout*
+questions, not *byte* questions — the NOTES.md SOH gotcha applies
+doubly, so an exact captured value still needs `--raw`/
+`--capture-out` and `od`; and when a render looks impossible, look at
+the raw capture before believing either view — the renderer
+implements a documented subset, and `--raw` is the ground truth it
+renders. `--capture-out` still carries the raw bytes either way, and
+`--screen` does not combine with `--repl` (a live session has no
+final capture to render).
 
 ## Exit behavior
 

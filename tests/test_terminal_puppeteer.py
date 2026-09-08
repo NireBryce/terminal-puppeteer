@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "terminal-puppeteer.py"
 
 sys.path.insert(0, str(REPO_ROOT))
-from terminal_puppeteer import ansi, cli, driver, keys, session  # noqa: E402
+from terminal_puppeteer import ansi, cli, driver, keys, screen, session  # noqa: E402
 
 # Short delays for CLI integration tests -- long enough for a local `cat`/
 # `printf`/`bash` to respond, short enough that the suite doesn't crawl.
@@ -448,6 +448,165 @@ class PrintKeyListTests(unittest.TestCase):
                      "WAIT-FOR:<pattern>", "WAIT-FOR-NEXT:<pattern>"):
             with self.subTest(form=form):
                 self.assertIn(form, out)
+
+
+class ScreenRenderTests(unittest.TestCase):
+    """Golden-grid tests for screen.render(), one per sequence family --
+    the renderer is a layout-only ANSI interpreter, so each family pins
+    where characters end up, not what they look like."""
+
+    def _render(self, raw, rows=24, cols=80):
+        return screen.render(raw, rows=rows, cols=cols)
+
+    def test_plain_text(self):
+        self.assertEqual(self._render(b'hello'), 'hello')
+
+    def test_crlf_lines(self):
+        self.assertEqual(self._render(b'line1\r\nline2'), 'line1\nline2')
+
+    def test_the_zsh_backspace_artifact_renders_clean(self):
+        # The NOTES.md gotcha, fixed by rendering: 'e' typed, the editor
+        # redraws via backspace, 'echo hi' overwrites it. A flat capture
+        # reads 'eecho hi'; a terminal shows 'echo hi'.
+        self.assertEqual(self._render(b'e\x08echo hi'), 'echo hi')
+
+    def test_cup_positions(self):
+        out = self._render(b'\x1b[2;3HX', rows=3, cols=5)
+        self.assertEqual(out.split('\n')[1], '  X')
+
+    def test_cursor_movement(self):
+        # Right 3, LF down (column stays), write: X lands at (1, 3).
+        out = self._render(b'\x1b[3C\nX', rows=3, cols=8)
+        self.assertEqual(out.split('\n')[1], '   X')
+        # CHA to column 2 (1-based): X overwrites the 'b'.
+        out = self._render(b'abc\r\x1b[2GX', rows=1, cols=5)
+        self.assertEqual(out, 'aXc')
+
+    def test_el_ed_ech(self):
+        # EL 0 from column 2 wipes to end of line.
+        out = self._render(b'abcde\x1b[2G\x1b[K', rows=1, cols=10)
+        self.assertEqual(out, 'a')
+        # ED 2 clears the screen without moving the cursor, so home
+        # explicitly before writing.
+        out = self._render(b'aaa\r\nbbb\x1b[2J\x1b[HX', rows=3, cols=10)
+        self.assertEqual(out, 'X')
+        # ECH blanks 3 cells at the cursor without moving it; the X
+        # then overwrites the first blanked cell.
+        out = self._render(b'abcde\r\x1b[3XX', rows=1, cols=10)
+        self.assertEqual(out, 'X  de')
+
+    def test_ich_dch(self):
+        # ICH 2 opens two blanks under the cursor, pushing 'abcd' right.
+        out = self._render(b'abcd\r\x1b[2@', rows=1, cols=10)
+        self.assertEqual(out, '  abcd')
+        # DCH 2 deletes under the cursor, pulling 'cd' left.
+        out = self._render(b'abcd\r\x1b[2P', rows=1, cols=10)
+        self.assertEqual(out, 'cd')
+
+    def test_il_dl(self):
+        # IL opens a blank line at the cursor, pushing the rest down.
+        out = self._render(b'a\r\nb\r\nc\x1b[1;1H\x1b[1L', rows=4, cols=5)
+        self.assertEqual(out.split('\n'), ['', 'a', 'b', 'c'])
+        # DL deletes the cursor's line, pulling the rest up.
+        out = self._render(b'a\r\nb\r\nc\x1b[2;1H\x1b[1M', rows=4, cols=5)
+        self.assertEqual(out.split('\n'), ['a', 'c'])
+
+    def test_scrolls_at_the_bottom(self):
+        # 24 A-lines on a 24-row screen: the first scrolls off, so 23
+        # lines of A remain before the final B.
+        out = self._render(b'A\r\n' * 24 + b'B')
+        lines = out.split('\n')
+        self.assertEqual(lines[0], 'A')
+        self.assertEqual(lines[-1], 'B')
+        self.assertEqual(out.count('A'), 23)
+
+    def test_scroll_region_pins_a_status_line(self):
+        # DECSTBM 1;23: rows 1-23 scroll, the status line below the
+        # region stays put -- the editor-redraw case IL/DL exist for.
+        # A final bare 'B' fills the row the last scroll left blank, so
+        # the screen ends full and 'no blank lines' is checkable. (The
+        # B-fill is deliberate: an A-fill would put an 'A' inside
+        # STATUS itself and make the count off by one.)
+        raw = (b'\x1b[1;23r\x1b[24;1HSTATUS\x1b[1;1H'
+               + b'B\r\n' * 30 + b'B')
+        out = self._render(raw, rows=24, cols=20)
+        lines = out.split('\n')
+        self.assertEqual(lines[-1], 'STATUS')
+        self.assertNotIn('', lines)
+        self.assertEqual(out.count('B'), 23)
+
+    def test_sgr_and_mode_sequences_discard_invisibly(self):
+        out = self._render(b'\x1b[31mred\x1b[0m\x1b[?2004h\x1b[>4;1m')
+        self.assertEqual(out, 'red')
+
+    def test_osc_and_dcs_discard(self):
+        self.assertEqual(self._render(b'\x1b]0;title\x07ok'), 'ok')
+        self.assertEqual(self._render(b'\x1b]8;;http://x\x1b\\ok'), 'ok')
+        self.assertEqual(self._render(b'\x1bP+q541b\x1b\\ok'), 'ok')
+
+    def test_truncated_sequences_render_nothing(self):
+        # A real terminal is still waiting for the tail -- it shows
+        # nothing. The bytes stay in --raw/--capture-out for forensics.
+        self.assertEqual(self._render(b'ok\x1b[31'), 'ok')
+        self.assertEqual(self._render(b'ok\x1b'), 'ok')
+        self.assertEqual(self._render(b'ok\x1b]0;cut'), 'ok')
+
+    def test_unknown_grammatical_final_discards(self):
+        self.assertEqual(self._render(b'\x1b[99zok'), 'ok')
+
+    def test_deferred_autowrap(self):
+        # Filling the last column arms the wrap; it fires only when the
+        # next printable arrives -- 'abcde' alone stays on row 0.
+        self.assertEqual(self._render(b'abcde', rows=2, cols=5), 'abcde')
+        self.assertEqual(self._render(b'abcdef', rows=2, cols=5),
+                         'abcde\nf')
+
+    def test_explicit_move_after_full_line_does_not_wrap(self):
+        out = self._render(b'abcde\x1b[1;1HX', rows=2, cols=5)
+        self.assertEqual(out, 'Xbcde')
+
+    def test_wide_characters_occupy_one_cell(self):
+        # Honest limitation, documented: the renderer is about layout,
+        # not glyph metrics -- a double-width glyph sits in one cell.
+        self.assertEqual(self._render('龼x'.encode(), rows=1, cols=4), '龼x')
+
+    def test_control_bytes_render_nothing(self):
+        # The NOTES.md SOH gotcha cuts both ways: --screen answers
+        # layout questions, not byte questions -- the SOH is *gone*
+        # from this view, which is exactly why od/--raw exist.
+        self.assertEqual(self._render(b'a\x01b\x07c'), 'abc')
+
+    def test_reverse_index_and_nel(self):
+        # RI at the top margin scrolls down; the column is preserved,
+        # so CR first puts the cursor where 'b' should land.
+        out = self._render(b'a\r\x1bMb', rows=2, cols=5)
+        self.assertEqual(out, 'b\na')
+        # NEL is CR+LF.
+        self.assertEqual(self._render(b'ab\x1bEc', rows=2, cols=5), 'ab\nc')
+
+    def test_save_restore_cursor(self):
+        # DECSC saves (0,0) after the CR; two LFs down, DECRC brings
+        # the cursor back and X overwrites the 'a'.
+        out = self._render(b'abc\r\x1b7\n\n\x1b8X', rows=3, cols=5)
+        self.assertEqual(out.split('\n')[0], 'Xbc')
+
+    def test_ris_resets_everything(self):
+        out = self._render(b'junk\x1bcfresh', rows=2, cols=10)
+        self.assertEqual(out, 'fresh')
+
+    def test_tab_stops(self):
+        out = self._render(b'a\tb', rows=1, cols=20)
+        self.assertEqual(out, 'a       b')
+
+    def test_the_blesh_probe_capture_renders_legibly(self):
+        # The acceptance case from the retired PLAN.md (TODO.md's
+        # --screen Done entry): ble.sh's cursor-glyph probe
+        # as it lands in a capture -- an unanswered DA2 request
+        # (\e[>c) followed by literal bracketed glyphs -- must render
+        # to the plain text it actually is, not garbage.
+        raw = b'\x1b[>c[\xe2\x96\xbd][\xef\xbc\x8b] probe tail'
+        out = self._render(raw, rows=3, cols=40)
+        self.assertTrue(out.startswith('[▽][＋] probe tail'), repr(out))
 
 
 class NearMissWarningTests(unittest.TestCase):
@@ -2061,6 +2220,54 @@ class ReplTests(unittest.TestCase):
                 self.assertIn(b'hi', f.read())
         finally:
             os.unlink(path)
+
+
+class ScreenCliTests(unittest.TestCase):
+    """--screen through the whole CLI: the grid replaces the byte
+    stream on stdout, --capture-out still gets the raw bytes, and the
+    flag refuses to combine with --repl."""
+
+    def test_screen_renders_the_final_grid_end_to_end(self):
+        # The integration acceptance shape: prompt/echo appears ONCE
+        # on the rendered screen -- a flat transcript interleaves a live
+        # line editor's redraws, a grid shows the screen as it was.
+        result = run_cli(
+            ["--cmd", "bash --norc -i", "--connect-wait", "0.8",
+             "--step-delay", "0.6", "--settle", "0.5", "--screen",
+             "echo SCREEN-OK", "ENTER"],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count(b"echo SCREEN-OK"), 1)
+        self.assertIn(b"SCREEN-OK", result.stdout)
+
+    def test_screen_composes_with_capture_out(self):
+        # stdout is the grid (no ANSI in it by construction); the file
+        # still gets the raw capture, byte for byte.
+        cmd = "bash -c \"printf 'a\\033[31mb\\033[0mc'; cat\""
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            result = run_cli(
+                ["--cmd", cmd, "--screen", "--capture-out", path, *FAST, "x"]
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn(b"ab", result.stdout)
+            self.assertNotIn(b"\x1b[", result.stdout)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"a\x1b[31mb\x1b[0mcx")
+        finally:
+            os.unlink(path)
+
+    def test_screen_conflicts_with_repl(self):
+        # --screen renders a FINAL capture; a live REPL session has
+        # none, so the combination is a usage error rather than a
+        # silently meaningless grid.
+        result = run_cli_input(
+            ["--cmd", "cat", *FAST, "--repl", "--screen"], b"hi\n"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--screen", result.stderr)
+        self.assertIn(b"--repl", result.stderr)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,55 @@ or a commit message instead.
 
 ---
 
+## 2026-09-08 — 0.5.0: --screen renders the capture as a terminal grid
+
+- **screen.py: a layout-only ANSI interpreter over the raw capture** —
+  the C0/CSI subset that determines WHERE characters sit: cursor
+  positioning (CUP, CUU/CUD/CUF/CUB, CHA/CNL/CPL, VPA/HPA, CR/LF/BS/
+  TAB, IND/RI/NEL, DECSC/DECRC), erase (EL/ED/ECH), character and line
+  insert/delete (ICH/DCH, IL/DL), scrolling (SU/SD, DECSTBM scroll
+  regions — editor redraws depend on a protected status line), and
+  xterm's deferred autowrap (wrapping only when the NEXT printable
+  arrives — immediate wrapping would leave phantom blank lines under
+  every full-width redraw). SGR, private modes, OSC/DCS strings, and
+  charset selection are parsed-and-discarded; unrecognized-but-
+  grammatical sequences discard invisibly; truncated sequences render
+  nothing, which is what a real terminal shows while still waiting for
+  the tail — the bytes themselves stay in --raw/--capture-out for
+  forensics, the same division of labor as ansi.py.
+- **`--screen`** — the grid replaces the byte stream on stdout (one
+  line per screen row, trailing whitespace and empty bottom rows
+  trimmed); composes with `--capture-out` (raw bytes still land in the
+  file) and the BEL note; refuses `--repl` (a live session has no
+  final capture to render). The acceptance cases render legibly: zsh's
+  `eecho hi` backspace artifact → `echo hi`, ble.sh's `[▽][▶]…` probe
+  → plain bracketed text, and the `bash -i` integration pins
+  prompt/echo appearing ONCE, not four interleaved copies.
+- Honest boundaries stated where they belong: every codepoint occupies
+  one cell (wide glyphs included); unhandled control bytes render as
+  nothing — --screen answers layout questions, not byte questions, so
+  the SOH gotcha still routes through od/--raw; alternate-screen not
+  modeled; when a render looks impossible, --raw is the ground truth.
+  README "Viewing the output", man OPTIONS + CAVEATS, NOTES.md
+  pointers from the redraw/SOH gotchas, --help epilog.
+- Tests 198 → 224: 23 golden-grid unit tests, one per sequence family
+  (including the two acceptance captures), 3 CLI tests. Caught for
+  real along the way: `'' in '<=>?'` is True in Python, so the
+  private-marker check was silently discarding every BARE CSI sequence
+  (`ESC[K`, `ESC[H`, `ESC[J` all no-ops) — the golden tests earned
+  their keep immediately. Plus three wrong expectations of mine
+  corrected against VT semantics (ECH doesn't move the cursor; RI
+  preserves the column; DECSTBM steady state leaves the region's last
+  row blank).
+- **PLAN.md retires** — the three-PR roadmap is fully landed (0.3.7,
+  0.4.0, 0.5.0); its Done entries live in TODO.md and its deferred
+  ideas moved to a TODO.md Backlog section, per the plan's own
+  lifecycle. 0.4.0 → 0.5.0 (pyproject, `_version.py`, man `.TH`).
+  Wheel round-trip + `nix flake check` + `nix build` +
+  `nix-build default.nix` verified before shipping.
+
+---
+
 ## 2026-09-08 — 0.4.0: Session class + --repl interactive mode
 
 - **session.py: `Session` owns the pty/subprocess mechanics and the
