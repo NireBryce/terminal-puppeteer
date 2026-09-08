@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.5" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.6" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -81,9 +81,10 @@ Exactly one of \fB\-\-ssh\fR or \fB\-\-cmd\fR is required.
 Shorthand for \fB\-\-cmd "ssh \-tt HOST"\fR.
 .B \-\-ssh\-arg
 adds an extra argument to the underlying \fBssh\fR invocation (repeatable,
-only valid with \fB\-\-ssh\fR) \-\- e.g. two instances of
-\fB\-\-ssh\-arg\fR to pass \fB\-o BatchMode=yes\fR for a non-interactive
-auth check.
+only valid with \fB\-\-ssh\fR) \-\- e.g.
+\fB\-\-ssh\-arg=\-o \-\-ssh\-arg=BatchMode=yes\fR for a non-interactive
+auth check (the \fB=\fR form is required: a value that starts with
+\fB\-\fR would be read as the next option).
 .TP
 .BI \-\-cmd " COMMAND"
 Any command, shell-quoted as one string and split with Python's
@@ -435,6 +436,18 @@ than trusting what printed. See
 .B NOTES.md
 in the project repository for the fuller account, including a real bug
 this cost real time on.
+.PP
+Over \fB\-\-ssh\fR all of the above still applies, one tty further away:
+the target's bytes make an extra round trip, so pacing on the target's
+own output (\fBWAIT\-FOR\fR, then a settle beat) matters more than fixed
+delays, and CTRL\-C delivery to a remote foreground job is racy at
+the transport's mercy (verified to work \-\- a remote command reports
+status 130 \-\- but not every run lands it). Do not combine
+.B \-\-answer\-queries
+with a ble.sh target: the canned cursor\-position replies arrive late
+and land as input during idle, which drives ble.sh into endless prompt
+redraws that swallow typed steps; ble.sh's own probe storm settles by
+itself in a couple of seconds if left unanswered.
 .SH FILES
 .TP
 .I PATH

@@ -26,6 +26,19 @@ jobs:
           sudo add-apt-repository -y ppa:fish-shell/release-4
           sudo apt-get update
           sudo apt-get install -y fish
+      # The ssh-transport tests need a real sshd: runners have
+      # openssh-server installed but not running. Start it and let the
+      # runner authenticate to itself (public repo, so minutes are free,
+      # and the step costs seconds) -- same reasoning as the fish PPA
+      # above: without this the tests run only on the author machine.
+      - name: start sshd for the ssh-transport tests
+        run: |
+          sudo systemctl start ssh || sudo systemctl start sshd
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 -q
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts
       # Stdlib only, both the tool and its tests -- no install step needed.
       - run: python3 -m unittest discover tests -v
       - run: python3 terminal-puppeteer.py --help

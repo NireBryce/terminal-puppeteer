@@ -201,3 +201,59 @@ necessarily proof the bug doesn't reproduce — it might just mean the
 window closed before the bug had a chance to fire. Raise the delays (or
 add an explicit step like `'sleep 3' ENTER` before the thing you actually
 care about) before concluding a negative result is real.
+
+## Over ssh, everything here happens one tty further away
+
+The `--ssh` path (`ssh -tt`) is verified end to end over a real ssh
+transport — commands execute, the 24x80 window propagates to the remote
+pty (a client with *no* tty on its side gets a 0x0 remote pty: `stty
+size` answers `0 0`, so don't diagnose window-size bugs through a bare
+ssh one-liner), job control works (`echo $-` shows the `m`), and CTRL-C
+kills a remote foreground job (it reports status 130). But latency
+multiplies every timing gotcha above, and two new ones showed up during
+that verification:
+
+- **CTRL-C delivery is racy.** The `^C` echo always appears (the byte
+  reached the remote pty), but the SIGINT sometimes lands late enough
+  that the queued follow-up steps sit un-executed past any reasonable
+  `--settle`. Retry before concluding the interrupt doesn't work — the
+  same repro run back-to-back can fail then pass.
+- **Pace on the remote's output, not on delays.** The login-shell case
+  (`--ssh host` with dotfiles active) has the ble.sh-style redraw storm
+  one connection away, and typed-ahead bytes vanish during redraws
+  exactly as they do locally (the fish lesson, over the network).
+
+## `--answer-queries` is a fish fix, not a ble.sh fix
+
+With ble.sh as the target (any recent bash setup with
+`ble.sh` in `.bashrc`), `--answer-queries` makes things *worse*: the
+canned cursor-position replies arrive after ble.sh's glyph-measuring
+probe has moved on, land as unrequested input while the prompt is idle,
+and drive endless prompt redraws — each redraw flushing typed steps.
+Left unanswered, ble.sh's own probe storm (one burst of ~20
+cursor-position probes) settles by itself in about two seconds and the
+prompt goes quiet. So: unanswered beats mis-answered for ble.sh; the
+flag stays what 0.3.1 made it — the thing that fixes fish, opt-in
+because the replies are canned lies.
+
+## A step named `sleep N` or `wait N` is a driver wait, not a typed command
+
+`SLEEP <seconds>`/`WAIT <seconds>` is matched case-insensitively, so the
+step `sleep 30` makes *the driver* wait 30 seconds and sends nothing —
+typing a literal `sleep 30` command to the target silently does nothing
+for 30 seconds, then sends an empty line (verified the embarrassing way:
+a "CTRL-C doesn't interrupt sleep" repro where the sleep was never sent
+at all, and `$?` read `0` because the ENTER had typed an empty line).
+Use `RAW:sleep 30\r` to actually type it — one write, which is also the
+right shape for the target's escape-sequence parser anyway.
+
+## A WAIT-FOR pattern can match your own typed echo
+
+The pty echoes every step as it's typed, and `WAIT-FOR` matches the
+stripped stream — which includes those echoes. `echo done-$?` followed
+by `WAIT-FOR:done-` matches the *echo of the command*, not its output,
+and the run succeeds before the command has run. Pick markers that
+exist only in output: either a string the input can't contain
+(`WAIT-FOR` on `/done-1[0-9][0-9]/` when the input says `done-$?`), or
+assert on the final capture instead of pacing on it.
+

@@ -396,6 +396,47 @@ class AnsiRegexTests(unittest.TestCase):
         # e.g. cursor-visibility toggles: \x1b[?25l / \x1b[?25h
         self.assertEqual(ansi.ANSI.sub(b"", b"\x1b[?25lhidden\x1b[?25h"), b"hidden")
 
+    def test_strips_csi_with_gt_private_marker(self):
+        # The parameter area is 0x30-0x3F, so > = < ? are all legal
+        # there -- ble.sh emits ESC[>4;1m (XTMODKEYS) and ESC[>c (DA2
+        # request), both of which survived stripping when only ? was
+        # allowed, visible as garbage in stripped captures over ssh.
+        for seq in (b"\x1b[>4;1m", b"\x1b[>4;2m", b"\x1b[>c", b"\x1b[>1u"):
+            with self.subTest(seq=seq):
+                self.assertEqual(ansi.ANSI.sub(b"", seq + b"x"), b"x")
+
+    def test_strips_da3_request_csi(self):
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b[=cq"), b"q")
+
+    def test_strips_colon_sgr(self):
+        # Modern SGR colon syntax (ITU T.416): 38:2::r:g:b.
+        raw = b"\x1b[38:2::255:0:0mcolored\x1b[0m"
+        self.assertEqual(ansi.ANSI.sub(b"", raw), b"colored")
+
+    def test_strips_csi_with_intermediate_byte(self):
+        # CSI space q (cursor style) has an intermediate byte 0x20-0x2F
+        # between parameters and final.
+        self.assertEqual(ansi.ANSI.sub(b"", b"\x1b[ qstyle\x1b[?25h"), b"style")
+
+    def test_strips_dcs_string(self):
+        # DCS (ESC P ... ESC \): fish and ble.sh speak XTGETTCAP
+        # (ESC P +q <cap> ESC \) and --answer-queries' XTVERSION reply
+        # is DCS; there was no DCS branch at all before.
+        for seq in (b"\x1bP+q541b\x1b\\", b"\x1bP>|Konsole (250203)\x1b\\"):
+            with self.subTest(seq=seq):
+                self.assertEqual(ansi.ANSI.sub(b"", seq + b"x"), b"x")
+
+    def test_leaves_unterminated_dcs_untouched(self):
+        # Same strip-what-is-provable policy as OSC: no ST, no strip.
+        raw = b"\x1bP+q541b truncated"
+        self.assertEqual(ansi.ANSI.sub(b"", raw), raw)
+
+    def test_does_not_corrupt_utf8_whose_bytes_look_like_csi_syntax(self):
+        # ӣ is U+04E3 = \xd3\x9b in UTF-8; 0x9b is the 8-bit CSI. The
+        # regex must key on the 7-bit ESC introducer only, never on raw
+        # bytes inside multi-byte characters.
+        self.assertEqual(ansi.ANSI.sub(b"", b"\xd3\x9bplain"), b"\xd3\x9bplain")
+
     def test_strips_osc_sequence_terminated_by_bel(self):
         self.assertEqual(ansi.ANSI.sub(b"", b"\x1b]0;window title\x07rest"), b"rest")
 
@@ -426,7 +467,7 @@ class AnsiRegexTests(unittest.TestCase):
         self.assertEqual(ansi.ANSI.sub(b"", b"\x1b(Btext\x1b)0"), b"text")
 
     def test_strips_known_single_char_escapes(self):
-        for ch in b"=>78McD":
+        for ch in b"=>78DEMc":
             seq = b"\x1b" + bytes([ch])
             with self.subTest(seq=seq):
                 self.assertEqual(ansi.ANSI.sub(b"", seq + b"x"), b"x")
@@ -903,6 +944,28 @@ def _fish_major():
 _FISH4 = (_fish_major() or 0) >= 4
 
 
+def _localhost_ssh():
+    """True if a real ssh transport to localhost works without
+    interaction (key auth already in place). The ssh-transport tests
+    exercise the actual `ssh -tt` path -- remote pty allocation, remote
+    shell over the protocol -- against the local sshd, so they run
+    wherever passwordless localhost ssh is set up (author machine, CI
+    after its sshd step) and skip elsewhere instead of failing on
+    ambient auth differences."""
+    if not shutil.which("ssh"):
+        return False
+    probe = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+         "-o", "StrictHostKeyChecking=accept-new", "localhost", "true"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, timeout=20,
+    )
+    return probe.returncode == 0
+
+
+_LOCAL_SSH = _localhost_ssh()
+
+
 @unittest.skipUnless(_FISH4, "fish 4 not on PATH")
 class FishIntegrationTests(unittest.TestCase):
     """The issue #37 verification, kept as tests: fish works under this
@@ -937,6 +1000,58 @@ class FishIntegrationTests(unittest.TestCase):
                 ["WAIT-FOR:FISHREADY", "SLEEP 0.8", "echo hi", "ENTER"],
                 2.0, 2.0, 5.0, wait_for_timeout=4,
             )
+
+
+@unittest.skipUnless(_LOCAL_SSH, "passwordless localhost ssh not available")
+class SshTransportTests(unittest.TestCase):
+    """The live --ssh verification, kept as tests (the TODO.md item,
+    narrowed: a real ssh transport -- `ssh -tt`, remote pty allocation,
+    remote shell over the protocol -- against the local sshd; a genuinely
+    different host remains out of scope, see TODO.md). Targets a plain
+    remote `bash --norc --noprofile -i` on purpose: the point here is the
+    transport, not the author's dotfiles (whose ble.sh redraw storm eats
+    keystrokes on its own schedule -- NOTES.md)."""
+
+    ARGV = ["ssh", "-tt", "localhost", "bash", "--norc", "--noprofile", "-i"]
+
+    def test_ssh_transport_round_trip_window_size_and_job_control(self):
+        # The three battery checks that motivated the TODO item, over
+        # one connection: commands execute end to end (the marker only
+        # appears if the remote shell ran the line), the tool's 24x80
+        # window propagates through ssh's pty request (surfaced as a
+        # real finding during the live verification: a client without a
+        # tty yields 0 0 on the remote side), and the remote shell has
+        # job control over -tt ($- gains its m).
+        out = driver.run(
+            self.ARGV,
+            ["echo SSHRT-$((20+22))", "ENTER", "stty size", "ENTER",
+             "echo flags=$-", "ENTER"],
+            *self._delays(),
+        )
+        self.assertIn(b"SSHRT-42", out)
+        self.assertIn(b"24 80", out)
+        flags = re.search(rb"flags=([a-zA-Z]+)", out)
+        self.assertIsNotNone(flags)
+        self.assertIn(b"m", flags.group(1))
+
+    def test_ssh_arg_reaches_the_remote_ssh_process(self):
+        # The = form: argparse can't take `--ssh-arg -o` (a value that
+        # starts with - reads as the next option), which is exactly what
+        # the README used to document as its example. End to end through
+        # the CLI so the parse and the passthrough are both pinned.
+        result = run_cli(
+            ["--ssh", "localhost", "--ssh-arg=-o", "--ssh-arg=ConnectTimeout=5",
+             "--connect-wait", "4", "--step-delay", "1.5", "--settle", "2.5",
+             "echo SSHARG-OK", "ENTER"],
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"SSHARG-OK", result.stdout)
+
+    def _delays(self):
+        # positional tail for driver.run: step_delay, settle,
+        # connect_wait (defaults matching the flags above).
+        return (1.5, 2.5, 4.0)
 
 
 class CliIntegrationTests(unittest.TestCase):
