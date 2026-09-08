@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-08" "terminal-puppeteer 0.4.0" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-08" "terminal-puppeteer 0.5.0" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -14,6 +14,7 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-rows " " \fIROWS\fR]
 .RB [ \-\-cols " " \fICOLS\fR]
 .RB [ \-\-raw ]
+.RB [ \-\-screen ]
 .RB [ \-\-capture\-out " " \fIFILE\fR]
 .RB [ \-\-answer\-queries ]
 .RB [ \-\-repl ]
@@ -31,6 +32,7 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-rows " " \fIROWS\fR]
 .RB [ \-\-cols " " \fICOLS\fR]
 .RB [ \-\-raw ]
+.RB [ \-\-screen ]
 .RB [ \-\-capture\-out " " \fIFILE\fR]
 .RB [ \-\-answer\-queries ]
 .RB [ \-\-repl ]
@@ -284,6 +286,38 @@ Seconds to wait for a banner or shell prompt before the first step
 .B \-\-raw
 Print output with ANSI escape sequences intact, instead of the default
 of stripping them.
+.TP
+.B \-\-screen
+Render the final capture as a terminal grid, sized by
+.B \-\-rows
+and
+.B \-\-cols,
+instead of a byte stream. The renderer is a layout-only ANSI
+interpreter \-\- cursor positioning, erase, character and line
+insert/delete, scrolling, and scroll regions \-\- the subset that
+determines WHERE characters sit. It is
+.B not
+a terminal emulator: colors and modes are parsed-and-discarded,
+unrecognized-but-grammatical sequences discard invisibly, truncated
+sequences render nothing (a real terminal is still waiting for their
+tail), every codepoint occupies one cell (wide glyphs included), and
+unhandled control bytes render as nothing \-\- the alternate-screen
+buffer is not modeled. What that buys: a live line editor's redraws
+stop looking like typos (zsh's \fBeecho hi\fR artifact renders as
+\fBecho hi\fR) and probe garbage renders as the plain text it is.
+Byte-level questions \-\- an embedded SOH, an exact captured value --
+still need
+.B \-\-raw
+or
+.B \-\-capture-out
+and
+.BR od (1);
+\-\-screen answers layout questions, not byte questions. Output
+replaces the byte stream on standard output (one line per screen row,
+trailing whitespace and empty bottom rows trimmed);
+.B \-\-capture-out
+still carries the raw capture. Does not combine with
+.BR \-\-repl .
 .TP
 .BI \-\-capture\-out " FILE"
 Also write the raw, unstripped pty capture to this file \-\- the
@@ -541,6 +575,27 @@ with a ble.sh target: the canned cursor\-position replies arrive late
 and land as input during idle, which drives ble.sh into endless prompt
 redraws that swallow typed steps; ble.sh's own probe storm settles by
 itself in a couple of seconds if left unanswered.
+.PP
+.B \-\-screen
+narrows what a capture can tell you, on purpose: it renders layout,
+not bytes. A control byte with no glyph (the SOH-in-a-variable case
+that cost real time once \-\- see
+.BR NOTES.md )
+is invisible in a
+.B \-\-screen
+render exactly as it is in a terminal, so byte-exact checks still go
+through
+.B \-\-raw
+/
+.B \-\-capture-out
+and
+.BR od (1).
+And a renderer that implements a documented subset of the VT grammar
+is honest about its edge: what it shows for a capture is what a real
+terminal was most plausibly showing, up to that subset \-\- when a
+render looks impossible, look at
+.B \-\-raw
+before believing either view.
 .SH FILES
 .TP
 .I PATH

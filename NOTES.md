@@ -18,12 +18,15 @@ does, heavily) sends those queries, gets no reply, and the raw escape
 bytes end up sitting in the captured output looking like corruption:
 
 ```
-[>c[▽][▶][龼][鿄][ㆸ][ힰ][゙][鿍]...
+    [>c[▽][▶][龼][鿄][ㆸ][ힰ][゙][鿍]...
 ```
 
 That block at the start of a capture against ble.sh is *normal* — it's
 ble.sh's own terminal probing failing to get answered, not a bug in
-whatever you're actually testing. Don't chase it. The program still runs
+whatever you're actually testing. Don't chase it. (`--screen` renders
+it as what it is — the literal bracketed glyphs, with the invisible
+query gone — which is usually enough to stop it looking like
+corruption at a glance.) The program still runs
 correctly underneath; it just can't detect terminal capabilities it would
 otherwise use to render more precisely. "Runs correctly underneath" has a
 real limit, though: a target that probes-then-fallbacks can take a
@@ -113,7 +116,9 @@ line); only the flat-text rendering of the *typing itself* is
 misleading. Same root cause as the ble.sh terminal-probing gotcha above
 (no real terminal to make live editor behavior legible), different
 symptom — expect it from any shell/line-editor combo that redraws as
-you type, not just ble.sh under bash.
+you type, not just ble.sh under bash. `--screen` is the fix for
+*reading* these captures: it processes the backspace the way a terminal
+does, and `eecho hi` renders as the `echo hi` it always was.
 
 ## A byte that looks empty in the output might not be
 
@@ -130,11 +135,14 @@ text roughly match" — pipe it through `od -c` (or write it to a file on
 the target and fetch that separately) instead of trusting what the
 terminal rendered.** This tool strips ANSI escapes by default for
 readability, which makes this worse, not better, for control bytes that
-aren't part of an ANSI sequence — `--raw` doesn't help either, since a raw
-SOH is still invisible, just no longer processed at all. There's no flag
-that fixes this; it's a rendering problem, not a capture problem, and it
-needs a different tool (`od`, `xxd`, a hexdump on the target) for the part
-that actually needs byte-exactness.
+aren't part of an ANSI sequence — `--raw` doesn't help either, since a
+raw SOH is still invisible, just no longer processed at all. There's no
+flag that fixes this; it's a rendering problem, not a capture problem,
+and it needs a different tool (`od`, `xxd`, a hexdump on the target) for
+the part that actually needs byte-exactness. `--screen` sits even
+further from the bytes: it renders *layout*, so invisible-and
+byte-questionable input disappears from its view entirely — by design,
+not as a bug.
 
 ## Forgetting the ENTER step is the single most common mistake
 

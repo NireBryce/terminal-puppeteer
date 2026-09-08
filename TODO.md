@@ -7,12 +7,33 @@ lists its blocker instead of sitting half-done.
 
 ## Open
 
-(nothing -- the last item, `--ssh` against a genuinely different host,
-closed 2026-09-08: verified live against `nire-tenacity` over its LAN
-path and pinned as the opt-in `SecondHostSshTests`, which run wherever
-`TERMINAL_PUPPETEER_SSH_HOST` points at a machine with key auth.)
+(nothing -- the three-PR plan from PLAN.md is fully landed as of
+2026-09-08; PLAN.md has retired, per its own lifecycle. Ideas that were
+considered and consciously deferred live in Backlog, below.)
+
+## Backlog (considered, not now)
+
+Inherited from PLAN.md when it retired. Not committed to; recorded so
+the reasoning isn't lost.
+
+- `--json` events log (steps sent, replies answered, timings) for
+  machine-readable run reports.
+- Mouse-event injection (SGR encoding) for TUI repros.
+- Per-keystroke type delay (human-speed typing vs fast input changes
+  line-editor behavior).
+- More QUERY_RESPONDERS entries as targets demand them.
 
 ## Done
+
+- [x] **`--screen` layout renderer** — 0.5.0 (2026-09-08). The final
+  capture rendered as a terminal grid (sized by `--rows`/`--cols`):
+  the layout-only C0/CSI subset (cursor positioning, erase, ICH/DCH,
+  IL/DL, scrolling + DECSTBM regions, deferred autowrap), everything
+  else parse-and-discarded, truncated sequences rendering nothing.
+  Replaces the byte stream on stdout; composes with `--capture-out`
+  (raw bytes still land in the file); refuses `--repl`. The zsh
+  `eecho hi` artifact and ble.sh's probe garbage render legibly —
+  the acceptance cases. Details in DEVLOG 2026-09-08.
 
 - [x] **Session class + `--repl` interactive mode** — 0.4.0
   (2026-09-08). `Session` (session.py: start/send_step/expect/resize/

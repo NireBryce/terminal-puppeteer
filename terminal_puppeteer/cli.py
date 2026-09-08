@@ -144,6 +144,19 @@ come. The Session class behind it (terminal_puppeteer.session: start/
 send_step/expect/resize/close) is importable for the same style of use
 from Python.
 
+Viewing the output: --screen renders the final capture as an actual
+terminal grid (--rows/--cols sized) instead of a byte stream. The flat
+transcript interleaves a live line editor's redraws with its text --
+backspaces left as literal characters, cursor moves invisible -- and a
+grid shows what a terminal was actually displaying: zsh's 'eecho hi'
+artifact renders as 'echo hi', ble.sh's cursor-glyph probe renders as
+plain bracketed text. It is a layout-only ANSI interpreter (cursor
+positioning, erase, insert/delete, scrolling, scroll regions), not a
+terminal emulator: colors and modes are parsed-and-discarded, truncated
+sequences render nothing (a real terminal is still waiting for their
+tail), and byte-level questions -- an embedded SOH, an exact value --
+still need --raw/--capture-out and od.
+
 One advisory note lands on stderr after a run: if any BEL (\x07) bytes
 came back from the target -- invisible in both stripped and raw output,
 but the standard "unbound key"/alert signal a whole class of bugs
@@ -167,6 +180,7 @@ from .keys import (
     print_key_list,
     warn_if_near_miss,
 )
+from .screen import render
 from .session import Session
 
 
@@ -318,6 +332,7 @@ def main():
     p.add_argument('--settle', type=float, default=1.5, help='extra seconds to wait after the last step (default: 1.5)')
     p.add_argument('--connect-wait', type=float, default=3.0, help='seconds to wait for a banner/prompt before the first step (default: 3.0)')
     p.add_argument('--raw', action='store_true', help='print output with ANSI escape sequences intact instead of stripped')
+    p.add_argument('--screen', action='store_true', help="render the final capture as a terminal grid (--rows/--cols sized) instead of a byte stream -- a layout-only ANSI interpreter (cursor movement, erase, scrolling), not a terminal emulator; byte-level forensics still needs --raw/--capture-out")
     p.add_argument('--capture-out', metavar='FILE', help="also write the raw, unstripped pty capture to this file -- stdout output unchanged, and the file is written even when the run fails mid-way (the partial capture is the diagnostic)")
     p.add_argument('--answer-queries', action='store_true', help="answer terminal capability queries (\\e[>c, \\e[6n, ...) with canned 'normal terminal' replies -- a target that probes-then-fallbacks can behave differently with no reply, so repros silently diverge from a real terminal (default: off, queries go unanswered)")
     p.add_argument('--wait-for-timeout', type=float, default=10.0, metavar='SECONDS', help='how long a WAIT-FOR step may wait for its pattern before failing the run (default: 10)')
@@ -363,11 +378,14 @@ def main():
     if args.repl:
         # The REPL's input IS stdin -- steps would collide with it, so
         # both other step sources are refused rather than silently
-        # concatenated or raced.
+        # concatenated or raced. --screen renders a FINAL capture; a
+        # live session has no final capture to render.
         if args.steps:
             p.error('--repl reads steps from stdin as it goes; pass no positional steps')
         if args.steps_file:
             p.error('--repl reads steps from stdin as it goes; --steps-file does not apply')
+        if args.screen:
+            p.error('--screen applies to the final capture; it does not combine with --repl')
         sys.exit(drive_repl(p, args, argv, env))
 
     try:
@@ -403,14 +421,30 @@ def main():
         # runtime-failure shape, exit 1, no usage block (issue #37).
         # The partial capture still goes to stdout first -- it is the
         # diagnostic (typically the target's own dying words), stripped
-        # the same as a successful run's.
-        captured = e.output if args.raw else ANSI.sub(b'', e.output)
+        # the same as a successful run's, or gridded the same when
+        # --screen is on.
+        if args.screen:
+            captured = render(e.output, rows=args.rows,
+                              cols=args.cols).encode('utf-8')
+        else:
+            captured = e.output if args.raw else ANSI.sub(b'', e.output)
         sys.stdout.buffer.write(captured)
         sys.stdout.buffer.write(b'\n')
         p.exit(1, f'{p.prog}: error: {e}\n')
+    maybe_note_bels(p, args, out)
+    if args.screen:
+        # --screen REPLACES the byte stream with the rendered grid: the
+        # capture was the run's raw record either way (--capture-out
+        # still gets the raw bytes), and this is the alternative VIEW
+        # of it -- what the terminal was actually showing. Computed on
+        # the raw capture; the grid contains no ANSI by construction,
+        # so --raw has nothing to change here.
+        rendered = render(out, rows=args.rows, cols=args.cols)
+        sys.stdout.buffer.write(rendered.encode('utf-8'))
+        sys.stdout.buffer.write(b'\n')
+        return
     if not args.raw:
         out = ANSI.sub(b'', out)
-    maybe_note_bels(p, args, out)
     sys.stdout.buffer.write(out)
     sys.stdout.buffer.write(b'\n')
 
