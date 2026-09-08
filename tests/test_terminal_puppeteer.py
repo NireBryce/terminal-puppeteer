@@ -181,6 +181,151 @@ class RawStepTests(unittest.TestCase):
         self.assertEqual(keys.encode_step(r"\e[I"), b"\\e[I")
 
 
+class PasteStepTests(unittest.TestCase):
+    """PASTE:<text>: the payload wrapped in real bracketed-paste framing
+    (\\e[200~ ... \\e[201~), sent as one write. The only way to express a
+    multi-line paste in one steps-file line: with bracketed-paste mode
+    enabled, a line editor treats the whole payload as one paste and
+    holds its newlines literal, instead of executing each line as it
+    arrives (README's bulk-paste gotcha)."""
+
+    def test_payload_wrapped_in_bracketed_paste_framing(self):
+        self.assertEqual(keys.encode_step("PASTE:hi"), b"\x1b[200~hi\x1b[201~")
+
+    def test_prefix_is_case_insensitive(self):
+        self.assertEqual(keys.encode_step("paste:hi"), b"\x1b[200~hi\x1b[201~")
+        self.assertEqual(keys.encode_step("Paste:x"), b"\x1b[200~x\x1b[201~")
+
+    def test_payload_goes_through_the_bind_style_escapes(self):
+        # Same decoder RAW: uses -- the framing is the difference, not a
+        # second escape syntax.
+        self.assertEqual(keys.encode_step(r"PASTE:a\tb"), b"\x1b[200~a\tb\x1b[201~")
+        self.assertEqual(keys.encode_step(r"PASTE:\e[3~"), b"\x1b[200~\x1b[3~\x1b[201~")
+        self.assertEqual(keys.encode_step(r"PASTE:\q"), b"\x1b[200~\\q\x1b[201~")
+
+    def test_multi_line_payload_survives_as_one_paste(self):
+        # The point of the form: embedded newlines are paste contents,
+        # not step separators or submits.
+        self.assertEqual(
+            keys.encode_step("PASTE:line1\nline2\nline3"),
+            b"\x1b[200~line1\nline2\nline3\x1b[201~",
+        )
+
+    def test_it_is_one_write_framing_and_payload_together(self):
+        # encode_step returns the whole thing as one value -- the driver
+        # writes it with a single os.write, so the target's paste parser
+        # never sees framing and contents separated.
+        self.assertTrue(
+            keys.encode_step("PASTE:hi").startswith(b"\x1b[200~hi\x1b[201~")
+        )
+
+    def test_empty_payload_raises(self):
+        # A bare paste framing carries nothing and would only confuse
+        # the target -- same shape as WAIT-FOR's empty pattern: a
+        # ValueError the CLI turns into a usage error.
+        for step in ("PASTE:", "paste:"):
+            with self.subTest(step=step):
+                with self.assertRaises(ValueError):
+                    keys.encode_step(step)
+                with self.assertRaises(ValueError):
+                    keys.parse_paste_step(step)
+
+    def test_non_paste_steps_return_none(self):
+        for step in ("hi", "TAB", "RAW:\\e[I", "WAIT-FOR:x"):
+            with self.subTest(step=step):
+                self.assertIsNone(keys.parse_paste_step(step))
+
+
+class ParseResizeStepTests(unittest.TestCase):
+    """RESIZE <rows> <cols>: a driver-side resize of the pty mid-run --
+    TIOCSWINSZ, then the kernel SIGWINCHes the target's foreground
+    group. --rows/--cols set the starting size; this changes it."""
+
+    def test_parses_rows_and_cols(self):
+        self.assertEqual(keys.parse_resize_step("RESIZE 40 120"), (40, 120))
+        self.assertEqual(keys.parse_resize_step("resize 24 80"), (24, 80))
+        self.assertEqual(keys.parse_resize_step("RESIZE  40\t120"), (40, 120))
+
+    def test_non_resize_steps_return_none(self):
+        # Bare 'RESIZE' mirrors bare 'SLEEP': the regex wants arguments,
+        # so without them it's not recognized at all and goes out as
+        # literal text.
+        for step in ("TAB", "ENTER", "RESIZE", "RESIZED 40 120"):
+            with self.subTest(step=step):
+                self.assertIsNone(keys.parse_resize_step(step))
+
+    def test_wrong_arity_raises(self):
+        for step in ("RESIZE 40", "RESIZE 40 120 30"):
+            with self.subTest(step=step):
+                with self.assertRaises(ValueError):
+                    keys.parse_resize_step(step)
+
+    def test_non_integer_dimensions_raise(self):
+        for step in ("RESIZE abc 120", "RESIZE 40 8.5", "RESIZE '' 80"):
+            with self.subTest(step=step):
+                with self.assertRaises(ValueError):
+                    keys.parse_resize_step(step)
+
+    def test_dimensions_below_one_raise(self):
+        # A 0x0 (or 0xN) tty is exactly what the --rows/--cols defaults
+        # exist to prevent -- RESIZE doesn't get to un-set it either.
+        for step in ("RESIZE 0 80", "RESIZE 40 0", "RESIZE -1 80"):
+            with self.subTest(step=step):
+                with self.assertRaises(ValueError):
+                    keys.parse_resize_step(step)
+
+    def test_dimensions_over_the_winsize_field_raise(self):
+        # The winsize struct's fields are 16-bit shorts; beyond 65535
+        # the driver's TIOCSWINSZ pack would raise struct.error mid-run
+        # -- caught here, where it's a usage error instead.
+        with self.assertRaises(ValueError):
+            keys.parse_resize_step("RESIZE 65536 80")
+        self.assertEqual(keys.parse_resize_step("RESIZE 65535 65535"),
+                         (65535, 65535))
+
+
+class ParseWaitForNextTests(unittest.TestCase):
+    """WAIT-FOR-NEXT:<pattern>: WAIT-FOR's matching, but only over
+    output arriving after the step starts -- the echo of your own
+    typing and a prompt that already contained the marker cannot
+    satisfy it (NOTES.md's WAIT-FOR gotcha)."""
+
+    def test_substring_pattern(self):
+        p = keys.parse_wait_for_next_step("WAIT-FOR-NEXT:ready")
+        self.assertTrue(p.search(b"ready now"))
+        self.assertIsNone(p.search(b"never mind"))
+
+    def test_regex_pattern_when_wrapped_in_slashes(self):
+        p = keys.parse_wait_for_next_step("WAIT-FOR-NEXT:/MA.R?K/")
+        self.assertTrue(p.search(b"MA1RK"))
+        self.assertIsNone(p.search(b"MAxxK"))
+
+    def test_patterns_are_bytes(self):
+        p = keys.parse_wait_for_next_step("WAIT-FOR-NEXT:/r[e]ady/")
+        self.assertTrue(p.search(b"ready"))
+
+    def test_empty_pattern_raises(self):
+        with self.assertRaises(ValueError):
+            keys.parse_wait_for_next_step("WAIT-FOR-NEXT:")
+
+    def test_invalid_regex_raises(self):
+        with self.assertRaises(ValueError):
+            keys.parse_wait_for_next_step("WAIT-FOR-NEXT:/[/")
+
+    def test_non_wait_for_next_steps_return_none(self):
+        for step in ("TAB", "SLEEP 5", "WAIT-FOR:ready"):
+            with self.subTest(step=step):
+                self.assertIsNone(keys.parse_wait_for_next_step(step))
+
+    def test_wait_for_next_is_not_also_a_wait_for_step(self):
+        # No prefix ambiguity: WAIT-FOR-NEXT: does not start with
+        # WAIT-FOR: (the seventh character differs), so the two parse
+        # functions partition the vocabulary cleanly -- pinned here so
+        # a reordering can't silently make plain WAIT-FOR swallow the
+        # NEXT form.
+        self.assertIsNone(keys.parse_wait_for_step("WAIT-FOR-NEXT:ready"))
+
+
 class ParseWaitStepTests(unittest.TestCase):
     """SLEEP/WAIT <seconds>: a driver-side pause that sends nothing --
     unlike a target-side 'sleep 5' ENTER, which runs a command in the
@@ -284,9 +429,10 @@ class PrintKeyListTests(unittest.TestCase):
 
     def test_lists_the_non_key_step_forms_too(self):
         # --list-keys is the one-screen step-vocabulary reference; the
-        # RAW:/SLEEP/WAIT-FOR forms belong on it, not just in --help.
+        # non-key forms belong on it, not just in --help.
         out = self._output()
-        for form in ("RAW:", "SLEEP <seconds>", "WAIT-FOR:<pattern>"):
+        for form in ("RAW:", "PASTE:", "SLEEP <seconds>", "RESIZE <rows> <cols>",
+                     "WAIT-FOR:<pattern>", "WAIT-FOR-NEXT:<pattern>"):
             with self.subTest(form=form):
                 self.assertIn(form, out)
 
@@ -325,12 +471,33 @@ class NearMissWarningTests(unittest.TestCase):
         self.assertEqual(keys.encode_step("CTRLC"), b"CTRLC")
 
     def test_does_not_warn_on_the_other_step_forms(self):
-        # RAW:/SLEEP/WAIT-FOR steps are their own exact-match vocabulary --
+        # The prefixed step forms are their own exact-match vocabulary --
         # 'RAW:CR' is three-quarters CR by difflib's math and is not a
-        # typo of it, and a malformed SLEEP/WAIT-FOR gets a proper usage
-        # error at validation time instead.
-        for step in ("RAW:CR", "RAW:TAB", "SLEEP 5", "wait 1",
-                     "WAIT-FOR:ENTER", "SLEEP abc"):
+        # typo of it, and a malformed form gets a proper usage error at
+        # validation time instead. ('wait 1' is deliberate here no more:
+        # lowercase sleep/wait now get their own advisory, tested below.)
+        for step in ("RAW:CR", "RAW:TAB", "PASTE:CR", "SLEEP 5", "SLEEP abc",
+                     "WAIT-FOR:ENTER", "WAIT-FOR-NEXT:ENTER"):
+            with self.subTest(step=step):
+                self.assertEqual(self._warns(step), "")
+
+    def test_advises_on_lowercase_sleep_and_wait(self):
+        # The NOTES.md mistake in advisory form: a lowercase 'sleep 30'
+        # IS a recognized step -- a driver-side wait that sends nothing --
+        # but reads like a command being typed. The note points at the
+        # RAW: form that types it for real.
+        stderr = self._warns("sleep 30")
+        self.assertIn("driver-side", stderr)
+        self.assertIn("sends nothing", stderr)
+        self.assertIn(r"RAW:sleep 30\r", stderr)
+        self.assertIn("driver-side", self._warns("wait 5"))
+
+    def test_no_advisory_for_uppercase_or_non_wait_spellings(self):
+        # The uppercase spellings are the documented driver form -- no
+        # note. Only the looks-like-a-typed-command shape advises, so
+        # mixed case and near-misses stay silent too.
+        for step in ("SLEEP 30", "WAIT 5", "Sleep 2", "sleepy 5",
+                     "git sleep 5"):
             with self.subTest(step=step):
                 self.assertEqual(self._warns(step), "")
 
@@ -925,6 +1092,120 @@ class DriverStepTests(unittest.TestCase):
         )
         self.assertIn(b"got-hi", out)
 
+    def test_paste_step_delivers_real_bracketed_paste_bytes(self):
+        # Byte-exact proof the PASTE form sends framing and payload as
+        # one write, same shape as the RAW od test above: stty -icanon
+        # so od reads it straight off the pty. Expected bytes:
+        # 1b 5b 32 30 30 7e 'h' 'i' 1b 5b 32 30 31 7e
+        # = \e[200~hi\e[201~. The pty's own echo shows up ECHOCTL-style
+        # as ^[[200~..., the literal text 'PASTE:hi' would echo as text.
+        out = driver.run(
+            ["bash", "-c", "stty -icanon; od -An -tx1 -N14; cat"],
+            ["PASTE:hi"], 0.5, 0.3, 0.3,
+        )
+        self.assertIn(b"1b 5b 32 30 30 7e 68 69 1b 5b 32 30 31 7e", out)
+
+    def test_resize_step_resizes_the_pty_mid_run(self):
+        # stty reads the tty directly -- no shell cooperation needed --
+        # so seeing 24 80 then 40 120 proves the TIOCSWINSZ landed and
+        # SIGWINCH was delivered between the two reads.
+        out = driver.run(
+            ["bash", "--norc", "-i"],
+            ["stty size", "ENTER", "RESIZE 40 120", "stty size", "ENTER"],
+            1.0, 1.0, 0.5,
+        )
+        self.assertIn(b"24 80", out)
+        self.assertIn(b"40 120", out)
+
+    def test_wait_for_next_step_ignores_output_from_before_the_step(self):
+        # The marker arrives during connect-wait, then never again: a
+        # plain WAIT-FOR would match it instantly; NEXT must not, and
+        # the wait must time out rather than silently succeed.
+        with self.assertRaises(driver.WaitForTimeout):
+            driver.run(
+                ["bash", "-c", "echo TP-NEXT-MARK; cat"],
+                ["WAIT-FOR-NEXT:TP-NEXT-MARK"],
+                0.1, 0.1, 0.3, wait_for_timeout=1,
+            )
+
+    def test_wait_for_next_step_matches_output_arriving_after_it(self):
+        # Same marker twice: once before the step (must not match it),
+        # once after (must). The wait succeeding at all proves the
+        # boundary was honored -- the first occurrence was already in
+        # the accumulator when the step started.
+        argv = ["bash", "-c", "echo TP-NEXT-MARK; (sleep 0.4; echo TP-NEXT-MARK) & cat"]
+        out = driver.run(
+            argv, ["WAIT-FOR-NEXT:TP-NEXT-MARK"], 0.2, 0.2, 0.3,
+            wait_for_timeout=5,
+        )
+        self.assertEqual(out.count(b"TP-NEXT-MARK"), 2)
+
+    def test_wait_for_next_step_ignores_the_echo_of_earlier_steps(self):
+        # The NOTES.md gotcha, fixed by form: the marker exists in the
+        # stream twice -- once as the pty's echo of the typed step
+        # (before the NEXT step starts), once in the target's reply
+        # (after). The target sleeps longer than step-delay, so the
+        # NEXT step starts before the reply exists: matching it at all
+        # proves the boundary was honored, and the count proves the
+        # wait didn't end on the echo (a boundary-less match would end
+        # the wait early and miss the reply entirely).
+        argv = ["bash", "-c", "read line; sleep 0.6; echo reply-$line; cat"]
+        out = driver.run(
+            argv,
+            ["marker-99", "ENTER", "WAIT-FOR-NEXT:marker-99"],
+            0.2, 0.3, 0.3, wait_for_timeout=5,
+        )
+        self.assertIn(b"reply-marker-99", out)
+        self.assertEqual(out.count(b"marker-99"), 2)
+
+    def test_capture_out_writes_the_raw_capture(self):
+        # The file is the raw stream exactly as returned -- --raw's
+        # stripping is the CLI's stdout business and must not touch it.
+        argv = ["bash", "-c", "printf 'MA\\033[31mRK\\n'; cat"]
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            out = driver.run(
+                argv, ["x"], 0.3, 0.2, 0.3, capture_path=path,
+            )
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), out)
+            self.assertIn(b"\x1b[31m", out)
+        finally:
+            os.unlink(path)
+
+    def test_capture_out_written_when_the_target_dies_mid_run(self):
+        # The partial capture is the diagnostic -- the failure path is
+        # exactly what the file is for.
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            with self.assertRaises(driver.TargetDied) as cm:
+                driver.run(
+                    ["bash", "-c", "echo pre-death; exit 5"],
+                    ["a", "ENTER", "b", "ENTER"],
+                    0.3, 0.2, 0.3, capture_path=path,
+                )
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), cm.exception.output)
+        finally:
+            os.unlink(path)
+
+    def test_capture_out_written_when_a_wait_for_times_out(self):
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            with self.assertRaises(driver.WaitForTimeout):
+                driver.run(
+                    ["bash", "-c", "echo early; cat"],
+                    ["WAIT-FOR:tp-never-arrives"],
+                    0.1, 0.1, 0.3, wait_for_timeout=0.5, capture_path=path,
+                )
+            with open(path, "rb") as f:
+                self.assertIn(b"early", f.read())
+        finally:
+            os.unlink(path)
+
 
 def _fish_major():
     """None when fish is absent; its major version otherwise. The fish
@@ -1405,6 +1686,103 @@ class CliIntegrationTests(unittest.TestCase):
     def test_no_bel_note_when_target_never_bells(self):
         result = run_cli(["--cmd", "cat", *FAST, "hi", "ENTER"])
         self.assertNotIn(b"BEL", result.stderr)
+
+    def test_paste_step_arrives_framed(self):
+        # End-to-end shape of PASTE at the CLI layer: the pty echo of
+        # the single write, ECHOCTL-rendered (ESC as ^[), nothing sent
+        # as literal 'PASTE:...' text.
+        result = run_cli(["--cmd", "cat", *FAST, "PASTE:hi"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"^[[200~hi^[[201~\n")
+
+    def test_empty_paste_step_is_a_clean_usage_error(self):
+        result = run_cli(["--cmd", "cat", "PASTE:"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"PASTE step", result.stderr)
+        self.assertIn(b"PASTE:", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_resize_step_end_to_end(self):
+        # The RESIZE verification from the plan, through the whole CLI:
+        # stty reads the tty directly, so 24 80 -> 40 120 across the
+        # step is the SIGWINCH/TIOCSWINSZ delivery proof.
+        result = run_cli(
+            ["--cmd", "bash --norc -i", "--connect-wait", "0.8",
+             "--step-delay", "0.6", "--settle", "0.5",
+             "stty size", "ENTER", "RESIZE 40 120", "stty size", "ENTER"],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"24 80", result.stdout)
+        self.assertIn(b"40 120", result.stdout)
+
+    def test_malformed_resize_steps_are_clean_usage_errors(self):
+        for step in ("RESIZE abc 80", "RESIZE 40", "RESIZE 40 120 30",
+                     "RESIZE 0 80", "RESIZE 70000 80"):
+            with self.subTest(step=step):
+                result = run_cli(["--cmd", "cat", step])
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"RESIZE step", result.stderr)
+                self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_empty_wait_for_next_step_is_a_clean_usage_error(self):
+        result = run_cli(["--cmd", "cat", "WAIT-FOR-NEXT:"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"WAIT-FOR-NEXT step", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_wait_for_next_step_ignores_the_typed_echo_end_to_end(self):
+        # The discriminating end-to-end: the marker is typed (so its
+        # echo precedes the NEXT step), and the target only prints it
+        # again 0.6s in -- past FAST's settle. If NEXT wrongly matched
+        # the echo, the run would end before the real output and the
+        # count would be 1; matching only post-step output gives 2.
+        cmd = "bash -c 'read line; sleep 0.6; echo tp-next-ok; cat'"
+        result = run_cli(
+            ["--cmd", cmd, "--connect-wait", "0.3", "--step-delay", "0.3",
+             "--settle", "0.3", "--wait-for-timeout", "5",
+             "tp-next-ok", "ENTER", "WAIT-FOR-NEXT:tp-next-ok"],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertGreaterEqual(result.stdout.count(b"tp-next-ok"), 2)
+
+    def test_capture_out_flag_writes_raw_capture_stdout_stays_stripped(self):
+        # --capture-out never changes stdout (stripped by default, as
+        # always); the file gets the raw stream, not the stripped one.
+        cmd = "bash -c \"printf 'a\\033[31mb\\033[0mc'; cat\""
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            result = run_cli(["--cmd", cmd, "--capture-out", path, *FAST, "x"])
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"abcx\n")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"a\x1b[31mb\x1b[0mcx")
+        finally:
+            os.unlink(path)
+
+    def test_capture_out_file_written_when_the_target_dies(self):
+        # The failure path is the point: a failed run leaves the partial
+        # capture in the file, same content the exit-1 stdout shows.
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            result = run_cli(
+                ["--cmd", 'bash -c "echo pre-death; exit 5"',
+                 "--capture-out", path, *FAST, "a", "ENTER"],
+            )
+            self.assertEqual(result.returncode, 1)
+            with open(path, "rb") as f:
+                self.assertIn(b"pre-death", f.read())
+        finally:
+            os.unlink(path)
+
+    def test_lowercase_sleep_step_prints_the_advisory_to_stderr(self):
+        # The advisory rides the same validation pass as the near-miss
+        # warning, so it lands on stderr before the run starts.
+        result = run_cli(["--cmd", "cat", *FAST, "sleep 0.2", "hi"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"driver-side", result.stderr)
+        self.assertIn(b"RAW:sleep 0.2\\r", result.stderr)
 
 
 class CliTimingTests(unittest.TestCase):

@@ -14,6 +14,16 @@ path and pinned as the opt-in `SecondHostSshTests`, which run wherever
 
 ## Done
 
+- [x] **Step-vocabulary batch** — 0.3.7 (2026-09-08). `PASTE:<text>`
+  (real bracketed-paste framing, one write), `RESIZE <rows> <cols>`
+  (TIOCSWINSZ; the kernel SIGWINCHes the foreground group),
+  `WAIT-FOR-NEXT:<pattern>` (matches only output arriving after the
+  step starts), `--capture-out FILE` (raw capture, written on failure
+  paths too), and the lowercase `sleep`/`wait` advisory. Details in
+  DEVLOG 2026-09-08. Running this batch's suite also surfaced #58
+  (pre-existing flaky #37-pin test, ambient-load race — separate
+  thread).
+
 - [x] **`--ssh` against a genuinely different host** — 0.3.6 follow-up.
   `nire-tenacity.local` (a different physical machine, its own sshd,
   reached over LAN/mDNS — the tailscale name pointed at the same box

@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-07" "terminal-puppeteer 0.3.6" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-09-08" "terminal-puppeteer 0.3.7" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -14,6 +14,7 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-rows " " \fIROWS\fR]
 .RB [ \-\-cols " " \fICOLS\fR]
 .RB [ \-\-raw ]
+.RB [ \-\-capture\-out " " \fIFILE\fR]
 .RB [ \-\-answer\-queries ]
 .RB [ \-v ]
 .RI [ STEP " ...]"
@@ -29,6 +30,7 @@ terminal-puppeteer \- drive a real interactive program through a pty, keystroke 
 .RB [ \-\-rows " " \fIROWS\fR]
 .RB [ \-\-cols " " \fICOLS\fR]
 .RB [ \-\-raw ]
+.RB [ \-\-capture\-out " " \fIFILE\fR]
 .RB [ \-\-answer\-queries ]
 .RB [ \-v ]
 .RI [ STEP " ...]"
@@ -133,9 +135,12 @@ a real terminal computes a control character.
 A step that doesn't match any known key is still sent as literal text,
 same as always \-\- but if it's close to one (a missing hyphen, a typo)
 a warning is printed to standard error saying so. Advisory only: what
-gets sent is unchanged either way.
+gets sent is unchanged either way. A step spelled like a typed command
+\-\- lowercase \fBsleep 30\fR/\fBwait 30\fR \-\- is a recognized
+driver-side wait that sends nothing, and gets its own advisory note
+pointing at the \fBRAW:\fR form that types it for real.
 .PP
-Three more step forms cover what named keys can't express:
+More step forms cover what named keys can't express:
 .TP
 .BI RAW: escapes
 Bytes through a bind/readline-style escape parser, sent as ONE write:
@@ -153,12 +158,35 @@ explicit prefix is the point \-\- a plain step was never supposed to
 grow escape syntax, so text that merely starts with a backslash keeps
 meaning what it always meant.
 .TP
+.BI PASTE: text
+The text wrapped in real bracketed-paste framing (\ee[200~ ...
+\ee[201~), sent as one write, with the same bind-style escapes
+.B RAW:
+understands. The way to express a multi-line paste in one step: a line
+editor with bracketed-paste mode enabled treats the whole payload as
+one paste and holds its newlines literal, instead of executing each
+line as it arrives (what a plain multi-line write does \-\- see
+.B NOTES.md
+in the project repository). Against a target that never enabled
+bracketed-paste mode, the framing bytes usually arrive as ignored
+noise and the payload types in plainly.
+.TP
 .IR SLEEP " seconds" ", " WAIT " seconds"
 A driver-side pause: sends nothing, just keeps draining for N seconds.
 Unlike a target-side \fB'sleep 5' ENTER\fR workaround, it puts nothing
 in the session under test \-\- no history entry, no
 PROMPT_COMMAND/precmd hooks firing mid-observation, no transcript noise
 \-\- and it works for non-shell targets.
+.TP
+.BI RESIZE " rows cols"
+A driver-side resize of the pty mid-run: the kernel delivers SIGWINCH
+to the target's foreground process group, the same delivery a real
+terminal's resize produces.
+.B \-\-rows
+and
+.B \-\-cols
+(below) fix the size the pty starts with; this changes it once the
+session is live \-\- for repros that only misbehave after a resize.
 .TP
 .BI WAIT-FOR: pattern
 Drain until the ANSI-stripped output accumulated so far matches: a
@@ -173,6 +201,19 @@ slow no-op; the budget is
 (default 10s). Matching is against the transcript, which includes the
 echo of your own typing \-\- wait for a marker that only exists in the
 target's output, not one you also typed.
+.TP
+.BI WAIT-FOR-NEXT: pattern
+The same matching, same /.../ regex form, same timeout \-\- but only
+against output arriving after the step starts. The echo of your own
+typing and a prompt that already contained the marker cannot satisfy
+it, which is exactly the caveat above, fixed by form:
+.B WAIT-FOR-NEXT:done\-42
+after typing
+.B done\-42
+waits for the target to say it. Honest boundary caveat: "after" is a
+length measured on the stripped stream, and one escape sequence can
+straddle it, so it is exact to within about one escape sequence at the
+boundary.
 .PP
 .B No step ever gets an implicit trailing newline.
 That is what lets a step be a bare \fBTAB\fR or a partial line someone's
@@ -241,6 +282,14 @@ Seconds to wait for a banner or shell prompt before the first step
 .B \-\-raw
 Print output with ANSI escape sequences intact, instead of the default
 of stripping them.
+.TP
+.BI \-\-capture\-out " FILE"
+Also write the raw, unstripped pty capture to this file \-\- the
+.B \-\-raw
+flag changes standard output's rendering only, and the file always gets
+the bytes exactly as they came off the pty. Written on every exit path:
+a run that fails mid-way (target death, WAIT-FOR timeout) still leaves
+the partial capture in the file, which is the diagnostic.
 .TP
 .B \-\-answer\-queries
 Answer terminal capability queries (device attributes, cursor position,
@@ -382,12 +431,15 @@ terminal-puppeteer.py \-\-cmd 'bash \-i' RAW:\ee[I 'echo focused?' ENTER
 .EE
 .RE
 .PP
-Defining something multi-line: write it to a file first, then source it
-as a single step, rather than typing the file's contents:
+Defining something multi-line: \fBPASTE:\fR frames it as a real
+bracketed paste (newlines held literal by a line editor with
+bracketed-paste mode on); a file written beforehand and sourced avoids
+typing the contents entirely:
 .PP
 .RS
 .EX
 terminal-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
+terminal-puppeteer.py \-\-cmd 'bash \-i' 'PASTE:foo() {\een  echo inside\een}\eenfoo' ENTER
 .EE
 .RE
 .PP
