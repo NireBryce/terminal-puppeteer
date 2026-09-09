@@ -503,7 +503,7 @@ typing the contents entirely:
 .RS
 .EX
 terminal-puppeteer.py \-\-cmd 'bash \-i' 'source /tmp/repro.sh' ENTER
-terminal-puppeteer.py \-\-cmd 'bash \-i' 'PASTE:foo() {\een  echo inside\een}\eenfoo' ENTER
+terminal-puppeteer.py \-\-cmd 'bash \-i' 'PASTE:foo() {\en  echo inside\en}\enfoo' ENTER
 .EE
 .RE
 .PP
@@ -514,7 +514,7 @@ in
 .PP
 .RS
 .EX
-echo 'echo hi' ENTER | terminal-puppeteer.py \-\-cmd 'bash \-i' \-\-repl
+printf "echo hi\enENTER\en" | terminal-puppeteer.py \-\-cmd 'bash \-i' \-\-repl
 .EE
 .RE
 .PP
@@ -626,10 +626,13 @@ reads standard input instead.
 .B README.md,
 .B NOTES.md,
 and
-.B DEVLOG.md
+.B DEVLOG.md,
+plus the task-oriented wiki pages under
+.BR docs/ ,
 in the project repository: what the tool does and how to invoke it,
-gotchas from actually using it against a real bug, and a running record
-of what changed in the project and why, respectively.
+gotchas from actually using it against a real bug, a running record
+of what changed in the project and why, and how-to pages organized
+by task.
 .SH BUGS
 Report issues at
 .BR https://github.com/NireBryce/terminal\-puppeteer/issues .

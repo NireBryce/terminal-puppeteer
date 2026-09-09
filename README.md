@@ -71,7 +71,8 @@ rather than generic AI-PR boilerplate.
 ./terminal-puppeteer.py --ssh myhost --steps-file repro.txt
 
 # interactive: feed steps a line at a time, pace on each response
-echo 'echo hi' ENTER | ./terminal-puppeteer.py --cmd 'bash -i' --repl
+# (one line is one step, so the text and its ENTER are two lines here)
+printf 'echo hi\nENTER\n' | ./terminal-puppeteer.py --cmd 'bash -i' --repl
 
 # what "TAB", "CTRL-U", etc. actually send, without a trip to the docs
 ./terminal-puppeteer.py --list-keys
@@ -416,6 +417,17 @@ investigated.
 `DEVLOG.md` — terse, reverse-chronological record of what changed in
 this project and why, for picking the work back up without re-reading
 the whole git log.
+
+`docs/` — the wiki, in-repo: task-oriented pages ([Home] with quick
+start, [Step vocabulary], repro [Recipes], a [Gotchas] index into
+NOTES.md). Same facts as this README, organized by what you're trying
+to do, each page stamped with the version its facts were checked
+against.
+
+[Home]: docs/Home.md
+[Step vocabulary]: docs/Step-vocabulary.md
+[Recipes]: docs/Recipes.md
+[Gotchas]: docs/Gotchas.md
 
 `man/terminal-puppeteer.1` — the same reference as this README in
 `man(1)` form: `man ./man/terminal-puppeteer.1` to read it in place.

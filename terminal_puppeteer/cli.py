@@ -49,7 +49,7 @@ piped.
     terminal-puppeteer.py --cmd 'tmux attach -t work' 'echo hi' ENTER
     terminal-puppeteer.py --ssh HOST --settle 5 'sleep 3' ENTER
     terminal-puppeteer.py --ssh HOST --steps-file repro.txt
-    echo 'echo hi' ENTER | terminal-puppeteer.py --cmd 'bash -i' --repl
+    printf 'echo hi\nENTER\n' | terminal-puppeteer.py --cmd 'bash -i' --repl
     terminal-puppeteer.py --ssh HOST --env TERM=dumb 'echo hi' ENTER
     terminal-puppeteer.py --list-keys
 
