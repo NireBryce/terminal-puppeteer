@@ -130,6 +130,14 @@ a repo other than this one — don't assume from how the text reads.
 - `DEVLOG.md` — terse, reverse-chronological, one entry per logical
   change rather than per commit. Read it before picking work back up here;
   it exists so that isn't a full `git log` read every time.
+- `docs/` — the wiki, in-repo (GitHub's wiki feature is unavailable on
+  this private repo: the `has_wiki` toggle silently no-ops via the API,
+  checked 2026-09-09; Elly directed it into `docs/` instead). Task-oriented
+  pages (Home, Step vocabulary, Recipes, Gotchas) for someone *using* the
+  tool. In-repo docs stay canonical — the wiki links rather than
+  duplicates wherever drift is likely, and every page is stamped with the
+  version its facts were empirically checked against. When behavior
+  changes, re-verify the stamped claims or bump the stamps.
 - `CONTRIBUTORS.md` / `STYLEGUIDE.md` — the outside-facing counterpart to
   this file: who can contribute (explicitly including LLM agents) and
   what "well-written" means for a submission from one. This file has the

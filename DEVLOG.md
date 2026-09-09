@@ -13,6 +13,38 @@ or a commit message instead.
 
 ---
 
+## 2026-09-09 — #64: docs fact-check pass (two stale examples fixed); the wiki lands in docs/
+
+- Asked for a docs pass "verifying old facts now that so much has
+  changed" plus a wiki. The audit: claims in README/man/NOTES checked
+  against the code and run live — defaults, step-table bytes via
+  `--list-keys`, flag behaviors, exit statuses, the advisories, every
+  runnable example against real targets. Mostly clean (the in-repo
+  docs kept pace through 0.5.0); two real stale facts, both examples:
+  - The man page's `PASTE:` example used `\een` in troff, which renders
+    `\en` — and `decode_raw` turns `\en` into ESC + literal `n`, so the
+    example typed a broken function definition into the target
+    (verified: bash syntax error, ESC bytes in the paste). Source fixed
+    to `\en` (renders `\n`); corrected payload verified to define and
+    call the function.
+  - The `--repl` quick-start example (`echo 'echo hi' ENTER | …
+    --repl`, in README, man EXAMPLES, and cli.py's docstring) pipes one
+    line, but `--repl` reads ONE STEP per line — it typed `ENTER`
+    literally and never submitted anything (verified: no `hi` in the
+    output, the literal echo visible). Fixed to the two-line `printf`
+    form in all three places, verified end to end.
+- **The wiki: GitHub's is unavailable on this private repo** —
+  `has_wiki` PATCH returns 200 but stays false, and the
+  `<repo>.wiki.git` repo doesn't exist (push to create fails too;
+  likely plan-gated). Elly directed it into `docs/`: Home, Step
+  vocabulary, Recipes, Gotchas — every page stamped with the version
+  its facts were empirically checked against, linking to README/NOTES
+  rather than duplicating where drift is likely. README's See also,
+  the man page's SEE ALSO, and this file's Docs section point at it.
+- No version bump: docs only.
+
+---
+
 ## 2026-09-08 — #58: the death-race tests made deterministic (no version bump)
 
 - **Root cause found, and it wasn't what the issue guessed.** The
