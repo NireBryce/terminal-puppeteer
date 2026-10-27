@@ -36,8 +36,8 @@ the diff or draft in front of you.
    failure mode, and what you checked afterward.
 8. **Voice.** Terse, concrete, no filler or marketing, no "Great catch!".
 9. **Disclosure.** Say plainly that an agent wrote or helped write it,
-   and add `Co-Authored-By: Claude <noreply@anthropic.com>` (no model
-   name) if your tooling supports trailers.
+   and add a bare `Co-Authored-By: Claude` (no model name, no email)
+   if your tooling supports trailers.
 10. **Cross-references.** An `owner/repo#123` shape naming another repo
     notifies that repo. Grep your text for it before posting.
 
