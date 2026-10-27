@@ -1,7 +1,7 @@
 # Gotchas
 
 The one-line index. Each entry has a full story with real captures in
-[`NOTES.md`](../NOTES.md) — read that before trusting a confusing
+[`NOTES.md`](../.claude/NOTES.md) — read that before trusting a confusing
 capture. Nothing here is hypothetical; every one of these cost real
 time once.
 

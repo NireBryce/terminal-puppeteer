@@ -18,18 +18,18 @@ What's not welcome: mass-generated, low-effort, or unverified
 submissions. An agent that hasn't actually run the code it's touching,
 or that pads a PR with generic boilerplate to look more thorough,
 wastes review time the same way a careless human contribution would.
-See `STYLEGUIDE.md` for what "well-written" means here concretely, not
+See `.claude/agent-styleguide.md` for what "well-written" means here concretely, not
 just as a vibe.
 
 ## Filing an issue
 
 `gh issue list --repo NireBryce/terminal-puppeteer --search "<keywords>"
---state all` first — check it isn't already tracked (`DEVLOG.md` is also
+--state all` first — check it isn't already tracked (`agent-devlog.md` is also
 worth a grep; this repo records fixes there, not just in closed
 issues). Then `gh issue create --repo NireBryce/terminal-puppeteer`, or
 the web UI. A good issue here: what's wrong, where, how you noticed it,
 and — if you're an LLM agent — how you verified it (ran it, read it,
-traced through it; see `STYLEGUIDE.md` point 2).
+traced through it; see `.claude/agent-styleguide.md` point 2).
 
 ## Opening a pull request
 
@@ -37,11 +37,11 @@ Fork, branch, commit, `python3 -m unittest discover tests` before you
 open it (stdlib only — no install step; `nix develop` if you'd rather
 not rely on whatever `python3` is already on your PATH), then open the
 PR against `main`. Small and focused beats large and sweeping; see
-`STYLEGUIDE.md` point 4.
+`.claude/agent-styleguide.md` point 4.
 
 ## Style guide
 
-`STYLEGUIDE.md` — a separate file, specifically for LLM-originating
+`.claude/agent-styleguide.md` — a separate file, specifically for LLM-originating
 submissions: verify claims before making them, explain why alongside
 what, write real tests, and match this repo's own voice rather than
 generic AI-PR boilerplate.

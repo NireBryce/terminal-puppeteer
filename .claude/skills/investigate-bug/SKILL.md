@@ -31,11 +31,11 @@ against.
 1. **Before reproducing anything**, run
    `gh issue list --repo NireBryce/terminal-puppeteer --search "<keywords>" --state all`
    with a couple of guesses from the report's own wording, and grep
-   `DEVLOG.md` and `NOTES.md` for the same terms. Three commands, not one
+   `agent-devlog.md` and `NOTES.md` for the same terms. Three commands, not one
    script — this repo is small enough that a wrapper isn't worth
-   maintaining yet; revisit that if `DEVLOG.md` and the issue count both
+   maintaining yet; revisit that if `agent-devlog.md` and the issue count both
    grow enough that checking by hand gets tedious.
-2. **A hit means read it fully** — the issue and/or the `DEVLOG.md` entry
+2. **A hit means read it fully** — the issue and/or the `agent-devlog.md` entry
    — before doing anything else. Pick up from where it left off rather
    than re-deriving from zero. If it's stale or wrong, fix *that* rather
    than starting a parallel investigation.
@@ -45,12 +45,12 @@ against.
    else, via a throwaway target (`--cmd 'bash -i'`, `--cmd 'cat'`) rather
    than reasoning about `run()`/`drain()` from reading the source alone.
    Once something is actually diagnosed, follow `propose-issue`'s flow to
-   file or track it, and add a `DEVLOG.md` entry for anything that
+   file or track it, and add a `agent-devlog.md` entry for anything that
    actually changed the project.
 4. **State fixed vs. verified precisely.** A fix that passes locally but
    hasn't been checked against a real target (SSH, a real shell, whatever
    the report used) is *written*, not *confirmed* — say which, in the
-   issue and `DEVLOG.md` both, not just in the conversation. See issue #1
+   issue and `agent-devlog.md` both, not just in the conversation. See issue #1
    for the shape this actually took here: a README claim that turned out
    false only once someone wrote a test against real behavior instead of
    trusting the docstring.
@@ -58,5 +58,5 @@ against.
 ## See also
 
 - `propose-issue` skill — the filing side of this same problem.
-- `DEVLOG.md` — where a finished investigation's outcome should end up,
+- `agent-devlog.md` — where a finished investigation's outcome should end up,
   so the next check in step 1 actually finds it.

@@ -1,7 +1,7 @@
-# TODO
+# Agent tasks
 
 Working list. Done items move to the bottom section (with the PR that
-landed them) and eventually fall off into DEVLOG.md, which is the
+landed them) and eventually fall off into agent-devlog.md, which is the
 authoritative record. Anything needing hardware or sandbox exceptions
 lists its blocker instead of sitting half-done.
 

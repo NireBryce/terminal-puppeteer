@@ -250,8 +250,8 @@ hardening changes, docs brought along:
   preserves the column; DECSTBM steady state leaves the region's last
   row blank).
 - **PLAN.md retires** — the three-PR roadmap is fully landed (0.3.7,
-  0.4.0, 0.5.0); its Done entries live in TODO.md and its deferred
-  ideas moved to a TODO.md Backlog section, per the plan's own
+  0.4.0, 0.5.0); its Done entries live in agent-tasks.md and its deferred
+  ideas moved to an agent-tasks.md Backlog section, per the plan's own
   lifecycle. 0.4.0 → 0.5.0 (pyproject, `_version.py`, man `.TH`).
   Wheel round-trip + `nix flake check` + `nix build` +
   `nix-build default.nix` verified before shipping.
@@ -377,7 +377,7 @@ hardening changes, docs brought along:
   host, and an unconfigured run must not probe anyone's machines —
   set the variable to any reachable host with key auth and the tests
   verify *your* path. Suite 138 → 140 (both skip unconfigured).
-- No version bump: tests and docs only. TODO.md's Open section is now
+- No version bump: tests and docs only. agent-tasks.md's Open section is now
   empty; the DONE entry carries the details.
 
 ---
@@ -409,7 +409,7 @@ hardening changes, docs brought along:
   `--ssh-arg` passthrough. Pinned as `SshTransportTests`
   (`skipUnless` passwordless localhost ssh works), which drive a plain
   remote `bash --norc` on purpose — the transport is the thing under
-  test, not the author's dotfiles. TODO.md's item narrows to "a
+  test, not the author's dotfiles. agent-tasks.md's item narrows to "a
   genuinely different host" (ts-tenacity's sshd was down when tried).
 - **CI runs the ssh tests for real**: test.yml starts the runner's own
   sshd and authorizes it to itself — same reasoning as #53's fish PPA
@@ -435,7 +435,7 @@ hardening changes, docs brought along:
 - Fish-over-ssh skipped: fish isn't installed on this machine (0.3.1's
   verification used a throwaway `nix shell`), and the transport findings
   don't depend on which shell drove them. Needs fish installed or a
-  second host (TODO.md).
+  second host (agent-tasks.md).
 - Tests 129 → 138 (seven regex, two ssh transport, version bump
   sync-checked by the existing guard). 0.3.5 → 0.3.6 (pyproject,
   `_version.py`, man `.TH`).
@@ -461,7 +461,7 @@ hardening changes, docs brought along:
 
 ---
 
-## 2026-09-07 — 0.3.5: ANSI stripping actually strips; TODO.md; CI hardening
+## 2026-09-07 — 0.3.5: ANSI stripping actually strips; agent-tasks.md; CI hardening
 
 - **ansi: ST-terminated OSC sequences are stripped now.** The regex's
   OSC branch only matched the BEL terminator, so `ESC ] payload ESC \`
@@ -473,7 +473,7 @@ hardening changes, docs brought along:
   unterminated OSCs stay untouched (strip-what-is-provable, unchanged).
   Five new regex tests including the hyperlink and the
   payload-ends-then-next-sequence boundary.
-- **TODO.md returns** (the old todo.md went away in the package split):
+- **agent-tasks.md returns** (the old todo.md went away in the package split):
   the working list this entry came from, with blockers named on items
   that can't be done from here (live `--ssh` needs a second host).
 - **CI hardening**: packaging job now asserts the README's man-page
@@ -826,7 +826,7 @@ hardening changes, docs brought along:
   the wheel actually built and installed into a scratch venv three
   times over the course of this, not just read and assumed correct.
 
-## 2026-08-24 — CONTRIBUTORS.md + STYLEGUIDE.md: LLM agents explicitly invited (#26)
+## 2026-08-24 — CONTRIBUTORS.md + .claude/agent-styleguide.md: LLM agents explicitly invited (#26)
 
 - Asked to write `CONTRIBUTORS.md` inviting issues/PRs from LLM agents
   (not just humans, and not merely tolerating them) as long as
@@ -834,7 +834,7 @@ hardening changes, docs brought along:
   means concretely.
 - Split into two files rather than one, on request: `CONTRIBUTORS.md`
   answers "can I contribute and how" (who's welcome, filing an issue,
-  opening a PR); `STYLEGUIDE.md` answers "what does well-written mean
+  opening a PR); `.claude/agent-styleguide.md` answers "what does well-written mean
   here" (10 rules, grounded in this repo's own demonstrated practice —
   cites #1/#4/#8/#9/#21 as the "verify, don't assume" precedent rather
   than reading as generic AI-PR advice).
@@ -971,7 +971,7 @@ hardening changes, docs brought along:
   it, 4 of the first 8 commits), the never-file-outside-this-repo rule,
   the GitHub `owner/repo#number` autolink note, and the two-confirmation
   `ship` flow, all re-grounded in this repo's actual state (no branch
-  ruleset, no `wiki/`/`lessons-learned.md` — `DEVLOG.md`/`NOTES.md` play
+  ruleset, no `wiki/`/`lessons-learned.md` — `agent-devlog.md`/`NOTES.md` play
   that role here, and this repo has been issue-native from the start
   rather than growing into it).
 - Found incidentally while verifying the `ship` skill's own "is it green"

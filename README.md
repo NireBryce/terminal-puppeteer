@@ -52,7 +52,7 @@ pointing it at anything sensitive.
 Issues and PRs are welcome — explicitly including from LLM agents, not
 just human contributors, as long as the submission is well-written and
 human-readable. See `CONTRIBUTORS.md` for how to file one, and
-`STYLEGUIDE.md` for what "well-written" means here concretely for an
+`.claude/agent-styleguide.md` for what "well-written" means here concretely for an
 LLM-originating submission: verify claims before making them, explain
 why alongside what, write real tests, and match this repo's own voice
 rather than generic AI-PR boilerplate.
@@ -476,14 +476,14 @@ path.
 
 ## See also
 
-`NOTES.md` — gotchas found by actually using this against a real bug (a
+`.claude/NOTES.md` — gotchas found by actually using this against a real bug (a
 ble.sh/carapace interaction on a remote host), worth reading before
 trusting a confusing capture: what a synthetic pty does and doesn't
 emulate, why a byte that looks empty in the output might not be, and how
 this tool's own diagnostic commands can get caught by the very bug being
 investigated.
 
-`DEVLOG.md` — terse, reverse-chronological record of what changed in
+`.claude/agent-devlog.md` — terse, reverse-chronological record of what changed in
 this project and why, for picking the work back up without re-reading
 the whole git log.
 
@@ -503,7 +503,7 @@ against.
 
 `CONTRIBUTORS.md` — who can contribute and how to file an issue or PR.
 
-`STYLEGUIDE.md` — a style guide for LLM-originating submissions
+`.claude/agent-styleguide.md` — a style guide for LLM-originating submissions
 specifically.
 
 "Alternatives" below — other tools doing the same kind of pty-driving,
