@@ -420,6 +420,32 @@ class ParseWaitForTests(unittest.TestCase):
                 self.assertIsNone(keys.parse_wait_for_step(step))
 
 
+class ParseScreenStepsTests(unittest.TestCase):
+    def test_screen_is_exact_uppercase(self):
+        self.assertTrue(keys.parse_screen_step('SCREEN'))
+        # 'screen' is a real command a repro might type.
+        self.assertIsNone(keys.parse_screen_step('screen'))
+        self.assertIsNone(keys.parse_screen_step('SCREEN x'))
+
+    def test_wait_for_screen_forms(self):
+        self.assertIsNone(keys.parse_wait_for_screen_step('WAIT-FOR:x'))
+        pattern, negate = keys.parse_wait_for_screen_step('WAIT-FOR-SCREEN:a.b')
+        self.assertFalse(negate)
+        self.assertTrue(pattern.search(b'a.b'))
+        self.assertFalse(pattern.search(b'axb'))  # literal, escaped
+
+    def test_negation_and_regex(self):
+        pattern, negate = keys.parse_wait_for_screen_step('WAIT-FOR-SCREEN:!/^ok$/')
+        self.assertTrue(negate)
+        self.assertTrue(pattern.search(b'x\nok\ny'))  # ^/$ anchor per row
+
+    def test_empty_and_bad_regex_are_errors(self):
+        for bad in ('WAIT-FOR-SCREEN:', 'WAIT-FOR-SCREEN:!', 'WAIT-FOR-SCREEN:/(/'):
+            with self.subTest(step=bad):
+                with self.assertRaises(ValueError):
+                    keys.parse_wait_for_screen_step(bad)
+
+
 class PrintKeyListTests(unittest.TestCase):
     """print_key_list() backs --list-keys (see VersionAndListKeysTests
     for the CLI-level check); these test its formatting logic directly."""
@@ -456,7 +482,8 @@ class PrintKeyListTests(unittest.TestCase):
         # non-key forms belong on it, not just in --help.
         out = self._output()
         for form in ("RAW:", "PASTE:", "SLEEP <seconds>", "RESIZE <rows> <cols>",
-                     "WAIT-FOR:<pattern>", "WAIT-FOR-NEXT:<pattern>"):
+                     "WAIT-FOR:<pattern>", "WAIT-FOR-NEXT:<pattern>",
+                     "WAIT-FOR-SCREEN:", "SCREEN"):
             with self.subTest(form=form):
                 self.assertIn(form, out)
 
@@ -1823,6 +1850,86 @@ _LOCAL_SSH = _localhost_ssh()
 
 
 @unittest.skipUnless(_FISH4, "fish 4 not on PATH")
+class ScreenStepSessionTests(unittest.TestCase):
+    """SCREEN / WAIT-FOR-SCREEN (issues #66, #67) and per-step BEL
+    attribution (#68), on the Session directly."""
+
+    def _bash(self, **kwargs):
+        s = session.Session(['bash', '--norc', '-i'], step_delay=0.4,
+                            connect_wait=0.8, wait_for_timeout=2, **kwargs)
+        s.start()
+        s.send_step('PS1="$ "')
+        s.send_step('ENTER')
+        return s
+
+    def test_screen_step_hands_the_grid_to_on_screen(self):
+        grids = []
+        s = self._bash(on_screen=grids.append)
+        try:
+            s.send_step('echo MID-RUN')
+            s.send_step('ENTER')
+            s.send_step('SCREEN')
+            s.send_step('echo later')
+            s.send_step('ENTER')
+            s.send_step('SCREEN')
+        finally:
+            s.close()
+        self.assertEqual(len(grids), 2)
+        self.assertIn('MID-RUN', grids[0])
+        self.assertNotIn('later\nlater', grids[0])
+        self.assertIn('later', grids[1])
+
+    def test_wait_for_screen_ignores_text_no_longer_displayed(self):
+        s = self._bash()
+        try:
+            for step in ('echo STALE-MARKER', 'ENTER', 'clear', 'ENTER'):
+                s.send_step(step)
+            s.send_step('WAIT-FOR:STALE-MARKER')  # stream still has it
+            with self.assertRaises(session.WaitForTimeout) as caught:
+                s.send_step('WAIT-FOR-SCREEN:STALE-MARKER')
+            self.assertIn('not on the screen', str(caught.exception))
+        finally:
+            s.close()
+
+    def test_wait_for_screen_negated_waits_until_gone(self):
+        s = self._bash()
+        try:
+            s.send_step('echo GONE-SOON')
+            s.send_step('ENTER')
+            s.send_step('WAIT-FOR-SCREEN:/^GONE-SOON$/')
+            with self.assertRaises(session.WaitForTimeout) as caught:
+                s.send_step('WAIT-FOR-SCREEN:!GONE-SOON')
+            self.assertIn('still on the screen', str(caught.exception))
+            s.send_step('clear')
+            s.send_step('ENTER')
+            s.send_step('WAIT-FOR-SCREEN:!GONE-SOON')
+        finally:
+            s.close()
+
+    def test_wait_for_screen_target_death_fails_fast(self):
+        s = session.Session(['bash', '--norc', '-i'], step_delay=0.3,
+                            connect_wait=0.5, wait_for_timeout=5).start()
+        try:
+            s.send_step('exit')
+            s.send_step('ENTER')
+            with self.assertRaises(session.TargetDied):
+                s.expect_screen(re.compile(b'never-drawn'))
+        finally:
+            s.close()
+
+    def test_bel_attributed_to_the_step_it_landed_under(self):
+        s = session.Session(['bash', '--norc', '-i'], step_delay=0.4,
+                            connect_wait=0.8).start()
+        try:
+            s.send_step('printf "\\a"')
+            s.send_step('ENTER')
+            s.send_step('echo quiet')
+            s.send_step('ENTER')
+        finally:
+            s.close()
+        self.assertEqual(s.bel_log, [(2, 'ENTER', 1)])
+
+
 class FishIntegrationTests(unittest.TestCase):
     """The issue #37 verification, kept as tests: fish works under this
     tool given both fixes its refusal exposed (controlling terminal +
@@ -2325,6 +2432,37 @@ class CliIntegrationTests(unittest.TestCase):
         result = run_cli(["--cmd", cmd, "--raw", *FAST, "x"])
         self.assertIn(b"1 BEL (0x07) byte", result.stderr)
 
+    def test_verbose_bel_note_names_the_step(self):
+        # Issue #68: with -v, one line per step the bells landed under.
+        cmd = 'bash -c "cat; printf \'\\007\'"'
+        result = run_cli(["--cmd", "cat", "-v", *FAST, "x"])
+        self.assertNotIn(b"BEL", result.stderr)
+        cmd = 'bash -c "read x; printf \'\\007\'; cat"'
+        result = run_cli(["--cmd", cmd, "-v", *FAST, "go", "ENTER", "y"])
+        self.assertIn(b"note: 1 BEL during step 2 (ENTER)", result.stderr)
+
+    def test_screen_step_prints_grid_midrun(self):
+        # Issue #66: SCREEN prints a labeled grid at that point, then
+        # the run continues and the final view still prints.
+        # --screen makes the final view a grid too, so the output splits
+        # cleanly: mid-run grid (no "two" yet), then the final grid.
+        result = run_cli(["--cmd", "cat", "--screen", *FAST, "one", "ENTER",
+                          "SCREEN", "two", "ENTER"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stdout,
+            b"-- SCREEN 1 --\none\none\none\none\ntwo\ntwo\n")
+
+    def test_wait_for_screen_timeout_exit_1(self):
+        result = run_cli(["--cmd", "cat", *FAST, "--wait-for-timeout", "0.5",
+                          "hi", "ENTER", "WAIT-FOR-SCREEN:nope"])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"WAIT-FOR-SCREEN step", result.stderr)
+
+    def test_wait_for_screen_empty_pattern_is_usage_error(self):
+        result = run_cli(["--cmd", "cat", *FAST, "WAIT-FOR-SCREEN:"])
+        self.assertEqual(result.returncode, 2)
+
     def test_no_bel_note_when_target_never_bells(self):
         result = run_cli(["--cmd", "cat", *FAST, "hi", "ENTER"])
         self.assertNotIn(b"BEL", result.stderr)
@@ -2481,6 +2619,20 @@ class ReplTests(unittest.TestCase):
         self.assertEqual(result.stdout.count(b'<< DONE'), 3)
         self.assertTrue(result.stdout.endswith(b'<< DONE\n'))
         self.assertIn(b'hi', result.stdout)
+
+    def test_screen_step_responds_with_the_grid(self):
+        result = self._repl(b'hi\nENTER\nSCREEN\n:quit\n')
+        self.assertEqual(result.returncode, 0)
+        # Last response block: the grid, then DONE.
+        last = result.stdout.rsplit(b'<< DONE\n', 2)[-2]
+        self.assertIn(b'hi', last)
+
+    def test_bel_note_rides_the_step_response(self):
+        cmd = 'bash -c "read x; printf \'\\007\'; cat"'
+        result = run_cli_input(['--cmd', cmd, *FAST, '--repl'],
+                               b'go\nENTER\n:quit\n', 30)
+        self.assertIn(b'<< NOTE 1 BEL (0x07) byte during this step\n<< DONE\n',
+                      result.stdout)
 
     def test_eof_settles_and_closes(self):
         result = self._repl(b'hi\nENTER\n')

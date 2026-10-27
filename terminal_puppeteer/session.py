@@ -1,7 +1,7 @@
 """The Session core: a pty, a spawned target, and the per-step dispatch
 (named keys, RAW:<escapes>, PASTE:<text>, the driver-side forms SLEEP
 <seconds>, RESIZE <rows> <cols>, WAIT-FOR:<pattern>,
-WAIT-FOR-NEXT:<pattern>) -- the machinery driver.run() drives one-shot
+WAIT-FOR-NEXT:<pattern>, WAIT-FOR-SCREEN:<pattern>, SCREEN) -- the machinery driver.run() drives one-shot
 and cli's --repl drives interactively, so there is one code path, not
 two that drift. Importable for library use:
 
@@ -36,10 +36,13 @@ from .ansi import ANSI, Stripper
 from .keys import (
     encode_step,
     parse_resize_step,
+    parse_screen_step,
     parse_wait_for_next_step,
+    parse_wait_for_screen_step,
     parse_wait_for_step,
     parse_wait_step,
 )
+from .screen import render
 
 
 def _claim_target_tty():
@@ -199,6 +202,11 @@ _DRIVER_STEP_FORMS = (
          pattern, step=step, only_new=True)),
     (parse_wait_for_step,
      lambda session, step, pattern: session.expect(pattern, step=step)),
+    (parse_wait_for_screen_step,
+     lambda session, step, parsed: session.expect_screen(
+         *parsed, step=step)),
+    (parse_screen_step,
+     lambda session, step, parsed: session.snapshot()),
     (parse_resize_step,
      lambda session, step, size: session.resize(*size)),
 )
@@ -218,7 +226,8 @@ class Session:
 
     def __init__(self, argv, *, step_delay=1.5, settle=1.5, connect_wait=3.0,
                  env=None, verbose=False, answer_queries=False,
-                 wait_for_timeout=10.0, rows=24, cols=80, capture_path=None):
+                 wait_for_timeout=10.0, rows=24, cols=80, capture_path=None,
+                 on_screen=None, bel_log=None):
         self.argv = argv
         self.step_delay = step_delay
         self.settle = settle
@@ -230,6 +239,16 @@ class Session:
         self.rows = rows
         self.cols = cols
         self.capture_path = capture_path
+        # SCREEN steps hand the rendered grid (str) to on_screen; with no
+        # callback they are a no-op beyond the render (library callers
+        # can call snapshot() directly for the text).
+        self.on_screen = on_screen
+        # BEL attribution (issue #68): (step_number, step_text, count)
+        # per step whose drain delivered standalone BELs. Step 0 is the
+        # startup window. A caller may pass its own list to read it back.
+        self.bel_log = [] if bel_log is None else bel_log
+        self._steps_sent = 0
+        self._bel_scanned = 0
         self._stripper = Stripper()
         self._out = b''
         self._started = False
@@ -275,6 +294,7 @@ class Session:
         self.controller = controller
         self._started = True
         self.drain(self.connect_wait)
+        self._record_bels('startup')
         return self
 
     def check_alive(self, narrative):
@@ -324,6 +344,25 @@ class Session:
                          f"not the target responding")
         if self.verbose:
             print(f'>> {step}', file=sys.stderr)
+        self._steps_sent += 1
+        try:
+            self._dispatch(step)
+        finally:
+            self._record_bels(step)
+
+    def _record_bels(self, step):
+        """Attribute standalone BELs that arrived since the last call to
+        `step` -- the step whose drain they landed in, which is not
+        necessarily the one that caused them (a delayed reaction lands
+        under the next step). Counted on the ANSI-stripped stream, like
+        the end-of-run note: a BEL terminating an OSC is not a bell."""
+        stripped = self.stripped()
+        count = stripped.count(b'\x07', self._bel_scanned)
+        self._bel_scanned = len(stripped)
+        if count:
+            self.bel_log.append((self._steps_sent, step, count))
+
+    def _dispatch(self, step):
         for parse, perform in _DRIVER_STEP_FORMS:
             parsed = parse(step)
             if parsed is not None:
@@ -390,6 +429,61 @@ class Session:
                 )
         return self._out
 
+    def snapshot(self):
+        """The capture so far rendered as a terminal grid (screen.render,
+        sized to the pty's current rows/cols); handed to `on_screen` if
+        set. Returns the grid text. Re-renders the whole accumulator --
+        repro-scale output is small (expect() already re-strips it every
+        poll)."""
+        text = render(self._out, rows=self.rows, cols=self.cols)
+        if self.on_screen is not None:
+            self.on_screen(text)
+        return text
+
+    def expect_screen(self, pattern, negate=False, step=None, timeout=None):
+        """WAIT-FOR-SCREEN: drain until the rendered screen's text
+        matches `pattern` (or, with negate, until it does NOT) -- what
+        is displayed now, not what was ever drawn (issue #67). Inherits
+        the renderer's limits (layout subset, no alternate screen).
+        Same failure shapes as expect(): WaitForTimeout with the last
+        screen seen, TargetDied if the target exits mid-wait (the
+        condition is re-checked first, so a state reached in the dying
+        burst still counts). Returns the accumulated output."""
+        what = step if step is not None else \
+            pattern.pattern.decode('utf-8', 'replace')
+        timeout = self.wait_for_timeout if timeout is None else timeout
+        deadline = time.time() + timeout
+        rendered_len = -1
+        grid = b''
+        while True:
+            if len(self._out) != rendered_len:
+                rendered_len = len(self._out)
+                grid = render(self._out, rows=self.rows,
+                              cols=self.cols).encode('utf-8')
+            if bool(pattern.search(grid)) != negate:
+                return self._out
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise WaitForTimeout(
+                    f'WAIT-FOR-SCREEN step {what!r}: '
+                    f'{"still on" if negate else "not on"} the screen '
+                    f'after {timeout:g}s -- screen at timeout: '
+                    f'{grid.decode("utf-8", "replace")!r}'
+                )
+            self.drain(min(DRAIN_POLL, remaining))
+            if self.proc.poll() is not None:
+                # One last look at what the dying burst drew.
+                grid = render(self._out, rows=self.rows,
+                              cols=self.cols).encode('utf-8')
+                if bool(pattern.search(grid)) != negate:
+                    return self._out
+                raise TargetDied(
+                    f'target {_exit_status_why(self.proc.returncode)} while '
+                    f'WAIT-FOR-SCREEN step {what!r} was still waiting -- '
+                    f'the screen cannot change any more',
+                    self._out,
+                )
+
     def resize(self, rows, cols):
         """A driver-side resize sends no bytes: TIOCSWINSZ on the pty,
         and the kernel delivers SIGWINCH to the pty's foreground process
@@ -398,6 +492,8 @@ class Session:
         sized at spawn."""
         fcntl.ioctl(self.controller, termios.TIOCSWINSZ,
                     struct.pack('HHHH', rows, cols, 0, 0))
+        # SCREEN/WAIT-FOR-SCREEN render at the pty's current size.
+        self.rows, self.cols = rows, cols
         self.drain(self.step_delay)
 
     def close(self):

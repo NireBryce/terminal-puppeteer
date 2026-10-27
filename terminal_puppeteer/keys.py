@@ -1,7 +1,8 @@
 """The step vocabulary: named keys (TAB, ENTER, CTRL-<letter>, the
 arrow/navigation keys, ...), RAW:<escapes> and PASTE:<text> byte strings,
 and the driver-side step forms (SLEEP <seconds>, RESIZE <rows> <cols>,
-WAIT-FOR:<pattern>, WAIT-FOR-NEXT:<pattern>) -- and how a step turns into
+WAIT-FOR:<pattern>, WAIT-FOR-NEXT:<pattern>, WAIT-FOR-SCREEN:<pattern>,
+SCREEN) -- and how a step turns into
 the bytes actually sent to the pty, or into a wait/resize the driver
 performs instead of a write. See README.md's Steps section and
 --list-keys for the human-facing reference this module's data backs --
@@ -88,6 +89,18 @@ WAIT_FOR_PREFIX = 'WAIT-FOR:'
 # WAIT-FOR: (the seventh character differs), so each parse function keys
 # on its own prefix alone.
 WAIT_FOR_NEXT_PREFIX = 'WAIT-FOR-NEXT:'
+
+# WAIT-FOR-SCREEN:<pattern> -- the same pattern forms, matched against the
+# rendered screen grid (screen.render) as it is *now*, not against
+# everything ever drawn. A leading '!' negates: wait until the pattern is
+# NOT on the screen (a literal pattern that starts with '!' goes in the
+# regex form, /!.../). See issue #67.
+WAIT_FOR_SCREEN_PREFIX = 'WAIT-FOR-SCREEN:'
+
+# SCREEN -- print the rendered grid of the capture so far, send nothing.
+# Exact uppercase only: unlike the named keys, 'screen' is a real command
+# a repro might type, so no case-insensitive match. See issue #66.
+SCREEN_STEP = 'SCREEN'
 
 # RESIZE <rows> <cols> -- a driver-side resize of the pty mid-run, not a
 # write: TIOCSWINSZ on the pty, then the kernel delivers SIGWINCH to the
@@ -226,6 +239,30 @@ def parse_wait_for_next_step(step):
     return _parse_pattern_step(step, WAIT_FOR_NEXT_PREFIX)
 
 
+def parse_wait_for_screen_step(step):
+    """WAIT-FOR-SCREEN:[!]<pattern> -> (compiled bytes regex, negate), the
+    regex matched against the rendered screen's text; None if the step
+    isn't a WAIT-FOR-SCREEN step; ValueError for an empty pattern or a
+    bad regex. Pattern forms are exactly WAIT-FOR's (except ^/$ anchor
+    per screen row); a leading '!' means "wait until this is gone"."""
+    if not step.upper().startswith(WAIT_FOR_SCREEN_PREFIX):
+        return None
+    body = step[len(WAIT_FOR_SCREEN_PREFIX):]
+    negate = body.startswith('!')
+    if negate:
+        body = body[1:]
+    pattern = _parse_pattern_step(WAIT_FOR_SCREEN_PREFIX + body,
+                                  WAIT_FOR_SCREEN_PREFIX)
+    # The grid is lines: ^ and $ anchor per row, which is what a pattern
+    # about "a line on the screen" means.
+    return re.compile(pattern.pattern, pattern.flags | re.MULTILINE), negate
+
+
+def parse_screen_step(step):
+    """SCREEN -> True; None for anything else (exact, uppercase)."""
+    return True if step == SCREEN_STEP else None
+
+
 def parse_paste_step(step):
     """PASTE:<text> -> the payload text (in decode_raw's escape form --
     the bytes it decodes to are the paste's contents); None if the step
@@ -330,6 +367,8 @@ def warn_if_near_miss(step):
     if (key.startswith(RAW_PREFIX) or key.startswith(PASTE_PREFIX)
             or key.startswith(WAIT_FOR_PREFIX)
             or key.startswith(WAIT_FOR_NEXT_PREFIX)
+            or key.startswith(WAIT_FOR_SCREEN_PREFIX)
+            or step == SCREEN_STEP
             or WAIT_STEP_RE.match(step)):
         return
     match = difflib.get_close_matches(key, ALL_KEY_NAMES, n=1, cutoff=0.8)
@@ -357,6 +396,8 @@ def print_key_list():
         ('RESIZE <rows> <cols>', 'resize the pty mid-run; the kernel SIGWINCHes the target'),
         ('WAIT-FOR:<pattern>', 'drain until stripped output matches (substring, or /regex/)'),
         ('WAIT-FOR-NEXT:<pattern>', 'same, but only output arriving after this step (ignores echoes)'),
+        ('WAIT-FOR-SCREEN:[!]<pat>', 'drain until the rendered screen matches now; ! waits for it to be gone'),
+        ('SCREEN', 'print the rendered screen so far (uppercase only), send nothing'),
     ]
     width = max(
         [len(', '.join(names)) for names in groups.values()]

@@ -123,6 +123,19 @@ satisfy it. Same `/.../` form, same timeout. Honest boundary: "after"
 is a length on the stripped stream, and one escape sequence can
 straddle it, so it's exact to within about one escape sequence.
 
+### `WAIT-FOR-SCREEN:[!]<pattern>` — what's displayed now
+
+Matches the rendered `--screen` grid, so text that was drawn and then
+erased can't satisfy it (`echo X`, `clear`, `WAIT-FOR:X` passes;
+`WAIT-FOR-SCREEN:X` times out). Same literal / `/regex/` forms and
+timeout; `^`/`$` anchor per row. A leading `!` waits for the pattern to
+be *gone*. Layout-subset renderer limits apply (no alternate screen).
+
+### `SCREEN` — print the grid now
+
+Sends nothing. One-shot: a `-- SCREEN <n> --` block on stdout ahead of
+the final view. `--repl`: that step's response. Uppercase only.
+
 ---
 
 *Facts checked against terminal-puppeteer 0.6.0, empirically

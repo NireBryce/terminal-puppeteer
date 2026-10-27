@@ -115,6 +115,18 @@ The other step forms cover what the key vocabulary can't express:
                      cannot satisfy it (WAIT-FOR's transcript includes
                      both). Same /.../ regex form, same timeout.
 
+  WAIT-FOR-SCREEN:[!]<pattern>
+                     the same matching against the rendered screen (the
+                     --screen grid) as it is NOW, not everything ever
+                     drawn -- erased text cannot satisfy it. ^/$ anchor
+                     per row; a leading ! waits until the pattern is
+                     gone. Same timeout and failure shape.
+
+  SCREEN             send nothing; print the rendered grid of the
+                     capture so far (one-shot: a '-- SCREEN n --' block
+                     ahead of the final view; --repl: the step's
+                     response). Uppercase only.
+
 No step ever gets an implicit trailing newline -- unlike a real line
 editor, this does not know a "command" is finished until an ENTER step
 says so. That is deliberate: it is what lets a step be a bare TAB or a
@@ -183,7 +195,9 @@ One advisory note lands on stderr after a run: if any BEL (\x07) bytes
 came back from the target -- invisible in both stripped and raw output,
 but the standard "unbound key"/alert signal a whole class of bugs
 expresses itself as -- the count is printed, so a bell is legible in a
-capture instead of silent.
+capture instead of silent. With -v the note names the step each bell
+arrived under (the step whose output window delivered it); --repl
+responses carry a '<< NOTE' line before the sentinel.
 """
 import argparse
 import os
@@ -198,6 +212,7 @@ from .keys import (
     parse_paste_step,
     parse_resize_step,
     parse_wait_for_next_step,
+    parse_wait_for_screen_step,
     parse_wait_for_step,
     parse_wait_step,
     print_key_list,
@@ -238,6 +253,7 @@ def validate_step(parser, step):
                         (parse_paste_step, 'PASTE step'),
                         (parse_resize_step, 'RESIZE step'),
                         (parse_wait_for_next_step, 'WAIT-FOR-NEXT step'),
+                        (parse_wait_for_screen_step, 'WAIT-FOR-SCREEN step'),
                         (parse_wait_for_step, 'WAIT-FOR step')):
         try:
             parse(step)
@@ -246,7 +262,7 @@ def validate_step(parser, step):
     warn_if_near_miss(step)
 
 
-def maybe_note_bels(parser, args, output):
+def maybe_note_bels(parser, args, output, bel_log=None):
     # Counted on the stream being printed, on purpose: a \x07
     # terminating an OSC sequence (\x1b]0;title\x07) is part of that
     # sequence, not a bell -- the standalone BELs this counts are the
@@ -260,7 +276,20 @@ def maybe_note_bels(parser, args, output):
     # one. See issue #47.
     printed = output if args.raw else ANSI.sub(b'', output)
     bels = printed.count(b'\x07')
-    if bels:
+    if bels and args.verbose and bel_log:
+        # -v already echoes the steps, so say which one each bell landed
+        # under (issue #68). Attribution is to the step whose drain
+        # delivered the bytes, which is not necessarily the one that
+        # caused them.
+        for step_number, step, count in bel_log:
+            where = 'startup' if step_number == 0 else \
+                f'step {step_number} ({step})'
+            print(f'{parser.prog}: note: {count} BEL{"s" if count != 1 else ""}'
+                  f' during {where}', file=sys.stderr)
+        print(f'{parser.prog}: note: a BEL is attributed to the step whose '
+              f'output window it arrived in; a delayed reaction can land '
+              f'under the next step', file=sys.stderr)
+    elif bels:
         print(
             f'{parser.prog}: note: {bels} BEL (0x07) byte'
             f'{"s" if bels != 1 else ""} received from the target',
@@ -421,6 +450,21 @@ def drive_repl(parser, args, argv, env):
     )
     out = sys.stdout.buffer
     screen_feeder = ScreenFeeder(args.rows, args.cols) if args.screen else None
+    if screen_feeder is None:
+        # A SCREEN step's response is the rendered grid (with --screen
+        # every response already is the live grid, so nothing to add).
+        session.on_screen = lambda text: emit(text.encode('utf-8'),
+                                              what='SCREEN snapshot')
+    bels_reported = 0
+
+    def note_new_bels():
+        # The per-step BEL note (issue #68): each step's output is
+        # isolated here, so the response can say its own bells.
+        nonlocal bels_reported
+        for _, _, count in session.bel_log[bels_reported:]:
+            out.write(f'<< NOTE {count} BEL (0x07) byte'
+                      f'{"s" if count != 1 else ""} during this step\n'.encode())
+        bels_reported = len(session.bel_log)
 
     def emit(delta, what='response'):
         if screen_feeder is not None:
@@ -446,6 +490,7 @@ def drive_repl(parser, args, argv, env):
         # usually the banner/prompt -- reports before the first step is
         # read, so a driver sees where it's typing into.
         emit(session.output, what='startup capture')
+        note_new_bels()
         out.write(b'<< DONE\n')
         out.flush()
         for line in sys.stdin:
@@ -460,10 +505,12 @@ def drive_repl(parser, args, argv, env):
                 session.send_step(step)
             except (TargetDied, WaitForTimeout) as error:
                 emit(session.output[mark:])
+                note_new_bels()
                 out.write(f'<< DEAD {error}\n'.encode())
                 out.flush()
                 return 1
             emit(session.output[mark:])
+            note_new_bels()
             out.write(b'<< DONE\n')
             out.flush()
         session.drain(args.settle)
@@ -672,6 +719,20 @@ def run_oneshot(parser, args, argv, env):
     for step in steps:
         validate_step(parser, step)
 
+    def print_screen(text):
+        # SCREEN steps print as they happen, ahead of the final view
+        # (which is written once, at the end). Capped and labeled like
+        # every other stdout surface.
+        snapshots.append(text)
+        shown = capped(text.encode('utf-8'), args, 'SCREEN snapshot',
+                       CAPTURE_POINTER)
+        out_stream = sys.stdout.buffer
+        out_stream.write(f'-- SCREEN {len(snapshots)} --\n'.encode())
+        write_output(shown)
+        out_stream.flush()
+
+    snapshots = []
+    bel_log = []
     try:
         out = run(
             argv, steps, args.step_delay, args.settle, args.connect_wait,
@@ -679,6 +740,7 @@ def run_oneshot(parser, args, argv, env):
             wait_for_timeout=args.wait_for_timeout,
             rows=args.rows, cols=args.cols,
             capture_path=args.capture_out,
+            on_screen=print_screen, bel_log=bel_log,
         )
     except OSError as error:
         # argv[0] not found, not executable, etc. -- a real runtime failure,
@@ -701,7 +763,7 @@ def run_oneshot(parser, args, argv, env):
         # is in --capture-out if one was configured).
         write_run_view(error.output, args, 'partial capture')
         parser.exit(1, f'{parser.prog}: error: {error}\n')
-    maybe_note_bels(parser, args, out)
+    maybe_note_bels(parser, args, out, bel_log)
     write_run_view(out, args)
 
 

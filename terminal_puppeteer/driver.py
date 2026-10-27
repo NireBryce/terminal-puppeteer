@@ -23,7 +23,7 @@ from .session import (  # noqa: F401 -- re-exported for callers/tests
 
 def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
         answer_queries=False, wait_for_timeout=10.0, rows=24, cols=80,
-        capture_path=None):
+        capture_path=None, on_screen=None, bel_log=None):
     """Spawn `argv` under a pty, send `steps` in order (the vocabulary
     session.py dispatches), drain `settle` seconds at the end, and
     return the raw capture. Fails loudly -- TargetDied, WaitForTimeout,
@@ -34,7 +34,7 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
         argv, step_delay=step_delay, settle=settle, connect_wait=connect_wait,
         env=env, verbose=verbose, answer_queries=answer_queries,
         wait_for_timeout=wait_for_timeout, rows=rows, cols=cols,
-        capture_path=capture_path,
+        capture_path=capture_path, on_screen=on_screen, bel_log=bel_log,
     )
     try:
         session.start()
