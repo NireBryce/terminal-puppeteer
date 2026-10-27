@@ -126,6 +126,20 @@ class TargetDied(Exception):
         self.output = output
 
 
+def _answer_queries(controller, out, replied):
+    """Write a canned reply for every query in `out` not yet answered.
+    Checked against the accumulated output, not just the latest chunk --
+    a query can straddle two reads. `replied[idx]` counts how many
+    occurrences of pattern idx in THIS drain window have been replied to;
+    every new occurrence gets its own reply, same as a real terminal
+    answering a target that re-queries on every prompt redraw."""
+    for idx, (query, reply) in enumerate(QUERY_RESPONDERS):
+        matches = list(query.finditer(out))
+        for match in matches[replied.get(idx, 0):]:
+            os.write(controller, reply(match) if callable(reply) else reply)
+        replied[idx] = len(matches)
+
+
 def drain(controller, seconds, chunk=65536, respond_queries=False):
     out = b''
     end = time.time() + seconds
@@ -142,8 +156,8 @@ def drain(controller, seconds, chunk=65536, respond_queries=False):
     # below sees the earlier occurrences again on every read.
     replied = {}
     while time.time() < end:
-        r, _, _ = select.select([controller], [], [], DRAIN_POLL)
-        if not r:
+        readable, _, _ = select.select([controller], [], [], DRAIN_POLL)
+        if not readable:
             if got_data:
                 break
             continue
@@ -156,30 +170,38 @@ def drain(controller, seconds, chunk=65536, respond_queries=False):
         out += data
         got_data = True
         if respond_queries:
-            # Checked against the accumulated output, not just this chunk
-            # -- a query can straddle two reads. `replied[i]` counts how
-            # many occurrences of pattern i in THIS window have been
-            # replied to; every new occurrence gets its own reply, same
-            # as a real terminal answering a target that re-queries on
-            # every prompt redraw.
-            for i, (query, reply) in enumerate(QUERY_RESPONDERS):
-                matches = list(query.finditer(out))
-                for m in matches[replied.get(i, 0):]:
-                    os.write(controller,
-                             reply(m) if callable(reply) else reply)
-                replied[i] = len(matches)
+            _answer_queries(controller, out, replied)
     return out
 
 
-def _exit_status_why(rc):
+def _exit_status_why(returncode):
     """Human words for a child's exit status: signal name where the
     target was killed, plain status where it exited on its own."""
-    if rc < 0:
+    if returncode < 0:
         try:
-            return f'killed by signal {-rc} ({signal.Signals(-rc).name})'
+            return (f'killed by signal {-returncode} '
+                    f'({signal.Signals(-returncode).name})')
         except ValueError:
-            return f'killed by signal {-rc}'
-    return f'exited with status {rc}'
+            return f'killed by signal {-returncode}'
+    return f'exited with status {returncode}'
+
+
+# Driver-side step forms, tried in order: (parser, performer). A match is
+# performed instead of written. A driver-side wait sends nothing -- that's
+# the point (issue #44): keep draining, write no bytes. WAIT-FOR-NEXT is
+# parsed before plain WAIT-FOR (no prefix overlap, but the ordering
+# documents which form wins if one is ever added that shares a prefix).
+_DRIVER_STEP_FORMS = (
+    (parse_wait_step,
+     lambda session, step, seconds: session.drain(seconds)),
+    (parse_wait_for_next_step,
+     lambda session, step, pattern: session.expect(
+         pattern, step=step, only_new=True)),
+    (parse_wait_for_step,
+     lambda session, step, pattern: session.expect(pattern, step=step)),
+    (parse_resize_step,
+     lambda session, step, size: session.resize(*size)),
+)
 
 
 class Session:
@@ -302,27 +324,11 @@ class Session:
                          f"not the target responding")
         if self.verbose:
             print(f'>> {step}', file=sys.stderr)
-        wait = parse_wait_step(step)
-        if wait is not None:
-            # A driver-side wait sends nothing -- that's the point
-            # (issue #44): keep draining, write no bytes.
-            self.drain(wait)
-            return
-        next_pattern = parse_wait_for_next_step(step)
-        if next_pattern is not None:
-            # Parsed before plain WAIT-FOR (no prefix overlap, but the
-            # ordering documents which form wins if one is ever added
-            # that shares a prefix).
-            self.expect(next_pattern, step=step, only_new=True)
-            return
-        pattern = parse_wait_for_step(step)
-        if pattern is not None:
-            self.expect(pattern, step=step)
-            return
-        size = parse_resize_step(step)
-        if size is not None:
-            self.resize(*size)
-            return
+        for parse, perform in _DRIVER_STEP_FORMS:
+            parsed = parse(step)
+            if parsed is not None:
+                perform(self, step, parsed)
+                return
         os.write(self.controller, encode_step(step))
         self.drain(self.step_delay)
 
@@ -413,34 +419,41 @@ class Session:
             return
         self._closed = True
         if self._started and self.capture_path is not None:
-            try:
-                fd = os.open(self.capture_path,
-                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, 'wb') as f:
-                    # fchmod even when O_CREAT didn't fire: a rerun over
-                    # an existing wider-mode capture must not leave the
-                    # old permissions on the new content. 0600 rather
-                    # than trusting the umask because a capture is
-                    # transcript content (NOTES.md's gotcha) -- pty
-                    # echo of typed steps included.
-                    os.fchmod(f.fileno(), 0o600)
-                    f.write(self._out)
-            except OSError as e:
-                print(f'terminal-puppeteer: warning: could not write '
-                      f'capture file {self.capture_path!r}: {e}',
-                      file=sys.stderr)
+            self._write_capture()
         if self.proc is not None:
-            # SIGTERM, then SIGKILL after 5s: the "only ever terminates
-            # the target" README promise. Runs on a clean finish same as
-            # on a Ctrl+C/exception mid-drain -- without this,
-            # interrupting the tool itself orphans the target (issue #8).
-            # An interactive shell ignores SIGTERM, so the kill path is
-            # the normal one for bash -i targets.
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()  # reaps
+            self._terminate_target()
         if self.controller is not None:
             os.close(self.controller)
+
+    def _write_capture(self):
+        try:
+            capture_fd = os.open(
+                self.capture_path,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(capture_fd, 'wb') as capture_file:
+                # fchmod even when O_CREAT didn't fire: a rerun over
+                # an existing wider-mode capture must not leave the
+                # old permissions on the new content. 0600 rather
+                # than trusting the umask because a capture is
+                # transcript content (NOTES.md's gotcha) -- pty
+                # echo of typed steps included.
+                os.fchmod(capture_file.fileno(), 0o600)
+                capture_file.write(self._out)
+        except OSError as error:
+            print(f'terminal-puppeteer: warning: could not write '
+                  f'capture file {self.capture_path!r}: {error}',
+                  file=sys.stderr)
+
+    def _terminate_target(self):
+        # SIGTERM, then SIGKILL after 5s: the "only ever terminates
+        # the target" README promise. Runs on a clean finish same as
+        # on a Ctrl+C/exception mid-drain -- without this,
+        # interrupting the tool itself orphans the target (issue #8).
+        # An interactive shell ignores SIGTERM, so the kill path is
+        # the normal one for bash -i targets.
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()  # reaps

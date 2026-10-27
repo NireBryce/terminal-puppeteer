@@ -95,8 +95,8 @@ class Stripper:
     def advance(self):
         out = self.raw
         last_end = self._boundary
-        for m in ANSI.finditer(out, self._boundary):
-            last_end = m.end()
+        for match in ANSI.finditer(out, self._boundary):
+            last_end = match.end()
         last_esc = out.rfind(b'\x1b', self._boundary)
         if last_esc < last_end:
             boundary = len(out)  # no dangling ESC: plain past the last match
@@ -105,8 +105,8 @@ class Stripper:
             if follower and follower not in self._ESC_FOLLOWERS:
                 # The last ESC can never start a sequence -- literal,
                 # and everything up to the next ESC is plain with it.
-                nxt = out.find(b'\x1b', last_esc + 1)
-                boundary = len(out) if nxt == -1 else nxt
+                next_esc = out.find(b'\x1b', last_esc + 1)
+                boundary = len(out) if next_esc == -1 else next_esc
             else:
                 boundary = last_end  # a truncated sequence may dangle
         self._stripped += ANSI.sub(b'', out[self._boundary:boundary])

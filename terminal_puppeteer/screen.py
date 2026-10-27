@@ -40,6 +40,18 @@ _CSI_INTERMEDIATE = re.compile(r'[\x20-\x2f]*')
 _CSI_FINAL = re.compile(r'[\x40-\x7e]')
 
 
+# Relative cursor moves by CSI final byte: (row step, column step, whether
+# the move also lands on column 0). CUU/CUD/CUF/CUB, CNL/CPL.
+_CURSOR_STEPS = {
+    'A': (-1, 0, False),
+    'B': (1, 0, False),
+    'C': (0, 1, False),
+    'D': (0, -1, False),
+    'E': (1, 0, True),
+    'F': (-1, 0, True),
+}
+
+
 def utf8_safe_len(buf):
     """Length prefix of `buf` with no partial multi-byte character at
     its end -- the incremental feeder's twin of "don't consume a
@@ -51,12 +63,12 @@ def utf8_safe_len(buf):
     that was already consumed -- so it passes through for the decoder
     to replace. Invalid lead bytes (0xfe/0xff) likewise: not this
     function's business."""
-    i = len(buf) - 1
-    while i >= 0 and (buf[i] & 0xC0) == 0x80:
-        i -= 1
-    if i < 0:
+    idx = len(buf) - 1
+    while idx >= 0 and (buf[idx] & 0xC0) == 0x80:
+        idx -= 1
+    if idx < 0:
         return len(buf)  # stray continuations, no lead: not partial
-    lead = buf[i]
+    lead = buf[idx]
     if lead < 0x80:
         return len(buf)
     if lead & 0xE0 == 0xC0:
@@ -67,7 +79,7 @@ def utf8_safe_len(buf):
         need = 4
     else:
         return len(buf)  # invalid lead: let the decoder replace it
-    return i if len(buf) - i < need else len(buf)
+    return idx if len(buf) - idx < need else len(buf)
 
 
 class Screen:
@@ -98,42 +110,42 @@ class Screen:
     # -- feeding ---------------------------------------------------------
 
     def feed(self, text):
-        i, n = 0, len(text)
-        while i < n:
-            ch = text[i]
-            if ch == '\x1b':
-                i = self._escape(text, i)
+        idx, length = 0, len(text)
+        while idx < length:
+            char = text[idx]
+            if char == '\x1b':
+                idx = self._escape(text, idx)
                 continue
-            if ch == '\r':
+            if char == '\r':
                 self.col = 0
                 self._pending_wrap = False
-            elif ch in '\n\x0b\x0c':
+            elif char in '\n\x0b\x0c':
                 # LF (VT/FF act like LF); column stays -- a pty target
                 # in cooked mode sends CRLF anyway, and this matches a
                 # real terminal's LF-without-LNM.
                 self._pending_wrap = False
                 self.linefeed()
-            elif ch == '\b':
+            elif char == '\b':
                 if self.col > 0:
                     self.col -= 1
                 self._pending_wrap = False
-            elif ch == '\t':
+            elif char == '\t':
                 self._pending_wrap = False
                 self.col = min(
                     (self.col // TAB_WIDTH + 1) * TAB_WIDTH, self.cols - 1)
-            elif ch < ' ' or ch == '\x7f':
+            elif char < ' ' or char == '\x7f':
                 pass  # other C0 controls and DEL render as nothing
             else:
-                self.put(ch)
-            i += 1
+                self.put(char)
+            idx += 1
         return self
 
-    def put(self, ch):
+    def put(self, char):
         if self._pending_wrap:
             self._pending_wrap = False
             self.col = 0
             self.linefeed()
-        self.grid[self.row][self.col] = ch
+        self.grid[self.row][self.col] = char
         if self.col == self.cols - 1:
             self._pending_wrap = True
         else:
@@ -153,18 +165,18 @@ class Screen:
         elif self.row > 0:
             self.row -= 1
 
-    def scroll_up(self, n):
+    def scroll_up(self, count):
         # Delete lines at the region top, blank-fill at its bottom --
         # inserting/deleting at top/bottom rather than slicing keeps
         # this trivially region-correct.
-        n = max(1, min(n, self.bottom - self.top + 1))
-        for _ in range(n):
+        count = max(1, min(count, self.bottom - self.top + 1))
+        for _ in range(count):
             del self.grid[self.top]
             self.grid.insert(self.bottom, [' '] * self.cols)
 
-    def scroll_down(self, n):
-        n = max(1, min(n, self.bottom - self.top + 1))
-        for _ in range(n):
+    def scroll_down(self, count):
+        count = max(1, min(count, self.bottom - self.top + 1))
+        for _ in range(count):
             del self.grid[self.bottom]
             self.grid.insert(self.top, [' '] * self.cols)
 
@@ -174,24 +186,24 @@ class Screen:
 
     # -- escape dispatch ---------------------------------------------------
 
-    def _escape(self, text, i):
-        """text[i] is ESC. Returns the index of the first unconsumed
+    def _escape(self, text, idx):
+        """text[idx] is ESC. Returns the index of the first unconsumed
         character. Complete sequences dispatch or discard; a sequence
         cut short renders nothing (a real terminal is still waiting for
         its tail); a control byte aborting a CSI is processed normally."""
-        n = len(text)
-        if i + 1 >= n:
-            return n  # lone trailing ESC: renders nothing
-        kind = text[i + 1]
+        length = len(text)
+        if idx + 1 >= length:
+            return length  # lone trailing ESC: renders nothing
+        kind = text[idx + 1]
         if kind == '[':
-            return self._csi(text, i + 2)
+            return self._csi(text, idx + 2)
         if kind == ']':
-            return self._string(text, i + 2, bel=True)    # OSC
+            return self._string(text, idx + 2, bel=True)    # OSC
         if kind in 'PX^_':
-            return self._string(text, i + 2, bel=False)   # DCS/SOS/PM/APC
+            return self._string(text, idx + 2, bel=False)   # DCS/SOS/PM/APC
         if kind in '()*+#':
             # Charset selection, DEC line-size -- consume one more char.
-            return min(i + 3, n)
+            return min(idx + 3, length)
         if kind == 'D':    # IND
             self._pending_wrap = False
             self.linefeed()
@@ -205,35 +217,32 @@ class Screen:
         elif kind == '7':  # DECSC
             self._saved = (self.row, self.col)
         elif kind == '8':  # DECRC
-            self.row, self.col = self._saved
-            self._clamp_cursor()
-            self._pending_wrap = False
+            self._restore_cursor()
         elif kind == 'c':  # RIS: full reset
             self.__init__(self.rows, self.cols)
         elif kind == '\\':  # stray ST
             pass
         # Anything else: a complete two-byte sequence we don't implement
         # (=, >, keypad modes, ...) -- consumed, renders nothing.
-        return i + 2
+        return idx + 2
 
-    def _csi(self, text, i):
-        """Parse the VT grammar from text[i] (just past 'ESC [')."""
-        n = len(text)
-        m = _CSI_PARAM.match(text, i)
-        params_str, i = m.group(0), m.end()
-        if i >= n:
-            return n  # truncated: renders nothing
-        m = _CSI_INTERMEDIATE.match(text, i)
-        i = m.end()
-        if i >= n:
-            return n
-        final = text[i]
+    def _csi(self, text, idx):
+        """Parse the VT grammar from text[idx] (just past 'ESC [')."""
+        length = len(text)
+        param_match = _CSI_PARAM.match(text, idx)
+        params_str, idx = param_match.group(0), param_match.end()
+        if idx >= length:
+            return length  # truncated: renders nothing
+        idx = _CSI_INTERMEDIATE.match(text, idx).end()
+        if idx >= length:
+            return length
+        final = text[idx]
         if not _CSI_FINAL.match(final):
             # Grammar violation: the ESC and parameters discard; the
             # offending byte is reprocessed by the main loop.
-            return i
+            return idx
         self._dispatch_csi(params_str, final)
-        return i + 1
+        return idx + 1
 
     def _dispatch_csi(self, params_str, final):
         # Private-marker sequences (DEC modes like ?2004h, DA2 >c, ...)
@@ -248,7 +257,7 @@ class Screen:
             part = part.split(':')[0]  # ignore subparams (38:2::...)
             params.append(int(part) if part.isdigit() else None)
 
-        def p(idx, default):
+        def param(idx, default):
             # CSI's default for a missing param is almost always 1 or
             # (for the second CUP param) 1; an explicit 0 means the
             # default too.
@@ -256,109 +265,106 @@ class Screen:
             return default if not value else value
 
         if final in 'Hf':    # CUP/HVP
-            self.row, self.col = p(0, 1) - 1, p(1, 1) - 1
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'A':   # CUU
-            self.row -= p(0, 1)
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'B':   # CUD
-            self.row += p(0, 1)
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'C':   # CUF
-            self.col += p(0, 1)
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'D':   # CUB
-            self.col -= p(0, 1)
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'E':   # CNL
-            self.row += p(0, 1)
-            self.col = 0
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'F':   # CPL
-            self.row -= p(0, 1)
-            self.col = 0
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == 'G':   # CHA
-            self.col = p(0, 1) - 1
-            self._clamp_cursor()
-            self._pending_wrap = False
-        elif final == '`':   # HPA
-            self.col = p(0, 1) - 1
-            self._clamp_cursor()
-            self._pending_wrap = False
+            self._set_cursor(param(0, 1) - 1, param(1, 1) - 1)
+        elif final in _CURSOR_STEPS:    # CUU/CUD/CUF/CUB/CNL/CPL
+            row_step, col_step, to_line_start = _CURSOR_STEPS[final]
+            amount = param(0, 1)
+            self._set_cursor(
+                self.row + row_step * amount,
+                0 if to_line_start else self.col + col_step * amount)
+        elif final in 'G`':  # CHA/HPA
+            self._set_cursor(self.row, param(0, 1) - 1)
         elif final == 'd':   # VPA
-            self.row = p(0, 1) - 1
-            self._clamp_cursor()
-            self._pending_wrap = False
+            self._set_cursor(param(0, 1) - 1, self.col)
         elif final == 'J':   # ED
-            self._erase_display(p(0, 0))
+            self._erase_display(param(0, 0))
         elif final == 'K':   # EL
-            self._erase_line(p(0, 0))
+            self._erase_line(param(0, 0))
         elif final == 'X':   # ECH
-            count = min(p(0, 1), self.cols - self.col)
-            for c in range(self.col, self.col + count):
-                self.grid[self.row][c] = ' '
+            self._erase_chars(param(0, 1))
         elif final == '@':   # ICH
-            count = min(p(0, 1), self.cols - self.col)
-            row = self.grid[self.row]
-            row[self.col:] = [' '] * count + row[self.col:self.cols - count]
+            self._insert_chars(param(0, 1))
         elif final == 'P':   # DCH
-            count = min(p(0, 1), self.cols - self.col)
-            row = self.grid[self.row]
-            row[self.col:] = row[self.col + count:] + [' '] * count
+            self._delete_chars(param(0, 1))
         elif final == 'L':   # IL
-            if self.top <= self.row <= self.bottom:
-                # Clamped to the region at/below the cursor, same shape
-                # as scroll_up's clamp to the region: the CSI parameter
-                # has no length cap, and the capture is the target's
-                # input -- an ESC[999999999999L in it must be a bounded
-                # edit, not hours of del/insert spinning the loop.
-                count = min(p(0, 1), self.bottom - self.row + 1)
-                for _ in range(count):
-                    del self.grid[self.bottom]
-                    self.grid.insert(self.row, [' '] * self.cols)
+            self._insert_lines(param(0, 1))
         elif final == 'M':   # DL
-            if self.top <= self.row <= self.bottom:
-                count = min(p(0, 1), self.bottom - self.row + 1)
-                for _ in range(count):
-                    del self.grid[self.row]
-                    self.grid.insert(self.bottom, [' '] * self.cols)
+            self._delete_lines(param(0, 1))
         elif final == 'S':   # SU
-            self.scroll_up(p(0, 1))
+            self.scroll_up(param(0, 1))
         elif final == 'T':   # SD
-            self.scroll_down(p(0, 1))
+            self.scroll_down(param(0, 1))
         elif final == 'r':   # DECSTBM
-            top, bottom = p(0, 1), p(1, self.rows)
-            if 1 <= top < bottom <= self.rows:
-                self.top, self.bottom = top - 1, bottom - 1
-                # DECSTBM homes the cursor, same as a real terminal.
-                self.row = self.col = 0
-                self._pending_wrap = False
+            self._set_scroll_region(param(0, 1), param(1, self.rows))
         elif final == 's':   # SCO save cursor
             self._saved = (self.row, self.col)
         elif final == 'u':   # SCO restore cursor
-            self.row, self.col = self._saved
-            self._clamp_cursor()
-            self._pending_wrap = False
+            self._restore_cursor()
         # else: SGR (m), mode set/reset (h/l), reports (n/c/t), ... --
         # grammatical, not layout, discarded.
+
+    def _set_cursor(self, row, col):
+        """Move the cursor (clamped to the grid) and disarm the deferred
+        autowrap -- every explicit cursor move does both."""
+        self.row, self.col = row, col
+        self._clamp_cursor()
+        self._pending_wrap = False
+
+    def _restore_cursor(self):
+        self._set_cursor(*self._saved)
+
+    def _set_scroll_region(self, top, bottom):
+        """DECSTBM, 1-indexed inclusive; an invalid region is ignored."""
+        if 1 <= top < bottom <= self.rows:
+            self.top, self.bottom = top - 1, bottom - 1
+            # DECSTBM homes the cursor, same as a real terminal.
+            self._set_cursor(0, 0)
+
+    def _erase_chars(self, count):
+        count = min(count, self.cols - self.col)
+        for col_idx in range(self.col, self.col + count):
+            self.grid[self.row][col_idx] = ' '
+
+    def _insert_chars(self, count):
+        count = min(count, self.cols - self.col)
+        row = self.grid[self.row]
+        row[self.col:] = [' '] * count + row[self.col:self.cols - count]
+
+    def _delete_chars(self, count):
+        count = min(count, self.cols - self.col)
+        row = self.grid[self.row]
+        row[self.col:] = row[self.col + count:] + [' '] * count
+
+    def _insert_lines(self, count):
+        if not self.top <= self.row <= self.bottom:
+            return
+        # Clamped to the region at/below the cursor, same shape as
+        # scroll_up's clamp to the region: the CSI parameter has no
+        # length cap, and the capture is the target's input -- an
+        # ESC[999999999999L in it must be a bounded edit, not hours of
+        # del/insert spinning the loop.
+        count = min(count, self.bottom - self.row + 1)
+        for _ in range(count):
+            del self.grid[self.bottom]
+            self.grid.insert(self.row, [' '] * self.cols)
+
+    def _delete_lines(self, count):
+        if not self.top <= self.row <= self.bottom:
+            return
+        count = min(count, self.bottom - self.row + 1)
+        for _ in range(count):
+            del self.grid[self.row]
+            self.grid.insert(self.bottom, [' '] * self.cols)
 
     def _erase_display(self, mode):
         if mode == 0:    # cursor to end of screen
             self._erase_line(0)
-            for r in range(self.row + 1, self.rows):
-                self.grid[r] = [' '] * self.cols
+            for row_idx in range(self.row + 1, self.rows):
+                self.grid[row_idx] = [' '] * self.cols
         elif mode == 1:  # start of screen to cursor (inclusive)
             self._erase_line(1)
-            for r in range(self.row):
-                self.grid[r] = [' '] * self.cols
+            for row_idx in range(self.row):
+                self.grid[row_idx] = [' '] * self.cols
         elif mode == 2:  # whole screen
             self.grid = [[' '] * self.cols for _ in range(self.rows)]
         # mode 3 (clear scrollback): nothing to clear here, no-op
@@ -366,28 +372,28 @@ class Screen:
     def _erase_line(self, mode):
         row = self.grid[self.row]
         if mode == 0:    # cursor (inclusive) to end of line
-            for c in range(self.col, self.cols):
-                row[c] = ' '
+            for col_idx in range(self.col, self.cols):
+                row[col_idx] = ' '
         elif mode == 1:  # start of line to cursor (inclusive)
-            for c in range(self.col + 1):
-                row[c] = ' '
+            for col_idx in range(self.col + 1):
+                row[col_idx] = ' '
         elif mode == 2:
             self.grid[self.row] = [' '] * self.cols
 
-    def _string(self, text, i, bel):
+    def _string(self, text, idx, bel):
         """OSC (ESC ]) / DCS-family (ESC P X ^ _): discard up to the
         terminator -- BEL or ESC \\ for OSC, ESC \\ for the rest.
         Truncated renders nothing (the terminal is still waiting)."""
-        n = len(text)
-        while i < n:
-            if text[i] == '\x07' and bel:
-                return i + 1
-            if text[i] == '\x1b':
-                if i + 1 < n and text[i + 1] == '\\':
-                    return i + 2
-                return i  # aborted by a new escape: reprocess it
-            i += 1
-        return n
+        length = len(text)
+        while idx < length:
+            if text[idx] == '\x07' and bel:
+                return idx + 1
+            if text[idx] == '\x1b':
+                if idx + 1 < length and text[idx + 1] == '\\':
+                    return idx + 2
+                return idx  # aborted by a new escape: reprocess it
+            idx += 1
+        return length
 
     # -- rendering ---------------------------------------------------------
 

@@ -40,7 +40,7 @@ SPECIAL_KEYS = {
 CTRL_KEY_RE = re.compile(r'^CTRL-([A-Z])$')
 
 # For the near-miss warning below, and for --list-keys.
-ALL_KEY_NAMES = sorted(SPECIAL_KEYS) + [f'CTRL-{c}' for c in string.ascii_uppercase]
+ALL_KEY_NAMES = sorted(SPECIAL_KEYS) + [f'CTRL-{letter}' for letter in string.ascii_uppercase]
 
 # A RAW:-prefixed step goes through decode_raw()'s bind/readline-style
 # escape parser instead of being sent as literal text -- the explicit
@@ -109,53 +109,67 @@ WINSIZE_MAX = 0xFFFF
 TYPED_WAIT_RE = re.compile(r'^(sleep|wait)\s+\d')
 
 
+def _decode_control_escape(text, idx):
+    r"""\C-x / \c-x at text[idx] (the backslash) -> (byte, consumed), or
+    None if it isn't a well-formed control escape. ord(key) & 0x1f is the
+    control-code formula bind itself uses -- covers ASCII letters both
+    cases plus @[\]^_, e.g. \C-[ = \x1b, same byte as \e. ASCII only:
+    str.isalpha() would let a non-ASCII letter through and ord()&0x1f it
+    into an unrelated control byte (\C-é would send TAB); an unknown key
+    stays literal instead."""
+    if not (text[idx + 1] in 'Cc' and idx + 3 < len(text)
+            and text[idx + 2] == '-'):
+        return None
+    key = text[idx + 3]
+    if key not in string.ascii_letters and key not in r'@[\]^_':
+        return None
+    return ord(key.upper()) & 0x1f, 4
+
+
+def _decode_hex_escape(text, idx):
+    r"""\xHH at text[idx] (the backslash) -> (bytes, consumed): one or two
+    hex digits after the x. \x with no hex digits stays literal."""
+    hexrun = ''
+    for digit in text[idx + 2:idx + 4]:
+        if digit not in string.hexdigits:
+            break
+        hexrun += digit
+    if not hexrun:
+        return b'\\x', 2
+    return bytes([int(hexrun, 16)]), 2 + len(hexrun)
+
+
 def decode_raw(text):
     # bind/readline-style escapes -> bytes. Unknown escapes stay literal
     # (backslash + the character), same as `echo -e` -- predictability
     # over silent reinterpretation of plain text.
     out = bytearray()
-    i = 0
-    while i < len(text):
-        c = text[i]
-        if c != '\\':
-            out += c.encode()
-            i += 1
+    idx = 0
+    while idx < len(text):
+        char = text[idx]
+        if char != '\\':
+            out += char.encode()
+            idx += 1
             continue
-        if i + 1 >= len(text):  # a lone trailing backslash stays literal
+        if idx + 1 >= len(text):  # a lone trailing backslash stays literal
             out += b'\\'
             break
-        n = text[i + 1]
-        if n in RAW_CHAR_ESCAPES:
-            out += RAW_CHAR_ESCAPES[n]
-            i += 2
-        elif n in 'Cc' and i + 3 < len(text) and text[i + 2] == '-' and (
-                text[i + 3] in string.ascii_letters
-                or text[i + 3] in r'@[\]^_'):
-            # \C-x / \c-x: ord(key) & 0x1f is the control-code formula
-            # bind itself uses -- covers ASCII letters both cases plus
-            # @[\]^_, e.g. \C-[ = \x1b, same byte as \e. ASCII only:
-            # str.isalpha() would let a non-ASCII letter through and
-            # ord()&0x1f it into an unrelated control byte (\C-é would
-            # send TAB); an unknown key stays literal instead.
-            out.append(ord(text[i + 3].upper()) & 0x1f)
-            i += 4
-        elif n == 'x':
-            digits = text[i + 2:i + 4]
-            hexrun = ''
-            for ch in digits:
-                if ch in string.hexdigits and len(hexrun) < 2:
-                    hexrun += ch
-                else:
-                    break
-            if hexrun:
-                out.append(int(hexrun, 16))
-                i += 2 + len(hexrun)
-            else:
-                out += b'\\x'  # \x with no hex digits stays literal
-                i += 2
+        escape = text[idx + 1]
+        control = _decode_control_escape(text, idx)
+        if escape in RAW_CHAR_ESCAPES:
+            out += RAW_CHAR_ESCAPES[escape]
+            idx += 2
+        elif control is not None:
+            byte, consumed = control
+            out.append(byte)
+            idx += consumed
+        elif escape == 'x':
+            decoded, consumed = _decode_hex_escape(text, idx)
+            out += decoded
+            idx += consumed
         else:
-            out += f'\\{n}'.encode()
-            i += 2
+            out += f'\\{escape}'.encode()
+            idx += 2
     return bytes(out)
 
 
@@ -163,18 +177,36 @@ def parse_wait_step(step):
     """SLEEP/WAIT <seconds> -> the number of seconds to drain for; None
     if the step isn't a wait step at all; ValueError if it is one but
     the duration is unusable (not a number, negative, non-finite)."""
-    m = WAIT_STEP_RE.match(step)
-    if not m:
+    match = WAIT_STEP_RE.match(step)
+    if not match:
         return None
+    keyword, duration = match.group(1).upper(), match.group(2)
     try:
-        seconds = float(m.group(2))
+        seconds = float(duration)
     except ValueError:
         raise ValueError(
-            f"{m.group(1).upper()} duration {m.group(2)!r} isn't a number of seconds"
+            f"{keyword} duration {duration!r} isn't a number of seconds"
         ) from None
     if not math.isfinite(seconds) or seconds < 0:
-        raise ValueError(f"{m.group(1).upper()} duration {m.group(2)!r} must be a finite, non-negative number of seconds")
+        raise ValueError(f"{keyword} duration {duration!r} must be a finite, non-negative number of seconds")
     return seconds
+
+
+def _parse_pattern_step(step, prefix):
+    """<prefix><pattern> -> a compiled bytes regex: a literal pattern gets
+    re.escape'd, one wrapped in /.../ is a regex; None if the step doesn't
+    start with `prefix`; ValueError for an empty pattern or a bad regex."""
+    if not step.upper().startswith(prefix):
+        return None
+    pattern = step[len(prefix):]
+    if not pattern:
+        raise ValueError(f'{prefix}needs a pattern to wait for')
+    if len(pattern) > 1 and pattern.startswith('/') and pattern.endswith('/'):
+        try:
+            return re.compile(pattern[1:-1].encode())
+        except re.error as error:
+            raise ValueError(f'{prefix} regex {pattern!r}: {error}') from None
+    return re.compile(re.escape(pattern.encode()))
 
 
 def parse_wait_for_step(step):
@@ -182,17 +214,7 @@ def parse_wait_for_step(step):
     ANSI-stripped output (substrings get re.escape'd); None if the step
     isn't a WAIT-FOR step; ValueError for an empty pattern or a bad
     regex."""
-    if not step.upper().startswith(WAIT_FOR_PREFIX):
-        return None
-    pattern = step[len(WAIT_FOR_PREFIX):]
-    if not pattern:
-        raise ValueError(f'{WAIT_FOR_PREFIX}needs a pattern to wait for')
-    if len(pattern) > 1 and pattern.startswith('/') and pattern.endswith('/'):
-        try:
-            return re.compile(pattern[1:-1].encode())
-        except re.error as e:
-            raise ValueError(f'{WAIT_FOR_PREFIX} regex {pattern!r}: {e}') from None
-    return re.compile(re.escape(pattern.encode()))
+    return _parse_pattern_step(step, WAIT_FOR_PREFIX)
 
 
 def parse_wait_for_next_step(step):
@@ -201,19 +223,7 @@ def parse_wait_for_next_step(step):
     driver measures where "after" begins; see driver.wait_for); None if
     the step isn't a WAIT-FOR-NEXT step; ValueError for an empty pattern
     or a bad regex. Pattern forms are exactly WAIT-FOR's."""
-    if not step.upper().startswith(WAIT_FOR_NEXT_PREFIX):
-        return None
-    pattern = step[len(WAIT_FOR_NEXT_PREFIX):]
-    if not pattern:
-        raise ValueError(f'{WAIT_FOR_NEXT_PREFIX}needs a pattern to wait for')
-    if len(pattern) > 1 and pattern.startswith('/') and pattern.endswith('/'):
-        try:
-            return re.compile(pattern[1:-1].encode())
-        except re.error as e:
-            raise ValueError(
-                f'{WAIT_FOR_NEXT_PREFIX} regex {pattern!r}: {e}'
-            ) from None
-    return re.compile(re.escape(pattern.encode()))
+    return _parse_pattern_step(step, WAIT_FOR_NEXT_PREFIX)
 
 
 def parse_paste_step(step):
@@ -237,21 +247,22 @@ def parse_resize_step(step):
     and at most 65535 (the winsize struct field is a 16-bit short --
     beyond it the driver's TIOCSWINSZ pack would raise struct.error, so
     the ceiling is validated here where it can be a usage error)."""
-    m = RESIZE_STEP_RE.match(step)
-    if not m:
+    match = RESIZE_STEP_RE.match(step)
+    if not match:
         return None
-    parts = m.group(1).split()
+    args_text = match.group(1)
+    parts = args_text.split()
     if len(parts) != 2:
         raise ValueError(
             f'RESIZE takes exactly two integers (rows cols), e.g. '
-            f'RESIZE 40 120 -- got {m.group(1)!r}'
+            f'RESIZE 40 120 -- got {args_text!r}'
         )
     try:
         rows, cols = int(parts[0]), int(parts[1])
     except ValueError:
         raise ValueError(
             f'RESIZE rows/cols must be integers, e.g. RESIZE 40 120 -- '
-            f'got {m.group(1)!r}'
+            f'got {args_text!r}'
         ) from None
     if rows < 1 or cols < 1:
         raise ValueError(f'RESIZE rows/cols must be at least 1, got {rows}x{cols}')
@@ -279,9 +290,9 @@ def encode_step(step):
     key = step.upper()
     if key in SPECIAL_KEYS:
         return SPECIAL_KEYS[key]
-    m = CTRL_KEY_RE.match(key)
-    if m:
-        return bytes([ord(m.group(1)) - 64])
+    ctrl_match = CTRL_KEY_RE.match(key)
+    if ctrl_match:
+        return bytes([ord(ctrl_match.group(1)) - 64])
     return step.encode()
 
 
