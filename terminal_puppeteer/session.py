@@ -32,7 +32,7 @@ import sys
 import termios
 import time
 
-from .ansi import ANSI
+from .ansi import ANSI, Stripper
 from .keys import (
     encode_step,
     parse_resize_step,
@@ -126,10 +126,21 @@ class TargetDied(Exception):
         self.output = output
 
 
-def drain(controller, seconds, chunk=65536, answered=None):
+def drain(controller, seconds, chunk=65536, respond_queries=False):
     out = b''
     end = time.time() + seconds
     got_data = False
+    # Reply bookkeeping is per-call, not carried across calls: `out` only
+    # holds this call's reads, so a count persisted from an earlier
+    # drain() indexed a match list it didn't correspond to -- a query
+    # arriving in a later window (a line editor re-querying on a prompt
+    # redraw after the startup window answered the first batch) sliced
+    # against a stale count and went unanswered, which is exactly the
+    # #37 fallback this flag exists to prevent. Within one call,
+    # `replied` keeps matches found by earlier reads from being answered
+    # twice: a query can straddle two reads, and the full-window rescan
+    # below sees the earlier occurrences again on every read.
+    replied = {}
     while time.time() < end:
         r, _, _ = select.select([controller], [], [], DRAIN_POLL)
         if not r:
@@ -144,18 +155,19 @@ def drain(controller, seconds, chunk=65536, answered=None):
             break
         out += data
         got_data = True
-        if answered is not None:
+        if respond_queries:
             # Checked against the accumulated output, not just this chunk
-            # -- a query can straddle two reads. `answered[i]` counts how
-            # many occurrences of pattern i have been replied to; every
-            # new occurrence gets its own reply, same as a real terminal
-            # answering a target that re-queries on every prompt redraw.
+            # -- a query can straddle two reads. `replied[i]` counts how
+            # many occurrences of pattern i in THIS window have been
+            # replied to; every new occurrence gets its own reply, same
+            # as a real terminal answering a target that re-queries on
+            # every prompt redraw.
             for i, (query, reply) in enumerate(QUERY_RESPONDERS):
                 matches = list(query.finditer(out))
-                for m in matches[answered.get(i, 0):]:
+                for m in matches[replied.get(i, 0):]:
                     os.write(controller,
                              reply(m) if callable(reply) else reply)
-                answered[i] = len(matches)
+                replied[i] = len(matches)
     return out
 
 
@@ -196,7 +208,7 @@ class Session:
         self.rows = rows
         self.cols = cols
         self.capture_path = capture_path
-        self._answered = {} if answer_queries else None
+        self._stripper = Stripper()
         self._out = b''
         self._started = False
         self._closed = False
@@ -228,10 +240,12 @@ class Session:
                 self.argv, stdin=target, stdout=target, stderr=target,
                 close_fds=True, env=self.env, preexec_fn=_claim_target_tty,
             )
-        except OSError:
-            # argv[0] doesn't exist, isn't executable, etc. -- close both
-            # ends ourselves (nothing else will) and let the caller decide
-            # how to report it; see issue #21.
+        except (OSError, subprocess.SubprocessError):
+            # argv[0] doesn't exist, isn't executable, etc. (OSError), or
+            # _claim_target_tty failed between fork and exec
+            # (SubprocessError -- Popen re-raises it in the parent) --
+            # either way close both ends ourselves (nothing else will)
+            # and let the caller decide how to report it; see issue #21.
             os.close(target)
             os.close(controller)
             raise
@@ -256,8 +270,19 @@ class Session:
         """Wait up to `seconds` for output, accumulating it. Stops early
         once output goes quiet for DRAIN_POLL -- see drain()'s module-
         level namesake for the mechanics this wraps."""
-        self._out += drain(self.controller, seconds, answered=self._answered)
+        new = drain(self.controller, seconds,
+                    respond_queries=self.answer_queries)
+        self._out += new
+        self._stripper.feed(new)
+        self._stripper.advance()
         return self.output
+
+    def stripped(self):
+        """The ANSI-stripped capture so far -- always exactly
+        ANSI.sub(b'', self.output), maintained incrementally (see
+        ansi.Stripper) so expect()'s per-poll match doesn't re-scan the
+        whole capture on every tick."""
+        return self._stripper.result()
 
     def send_step(self, step, on_death=None):
         """Dispatch one step of the vocabulary: a driver-side form
@@ -307,9 +332,11 @@ class Session:
         the stripped stream is the point (issue #46): matching raw
         bytes is where a line editor redrawing mid-marker puts
         cursor-positioning escapes between the characters of the thing
-        being waited for. Stripping the whole accumulator each poll,
-        not a tail: an escape sequence can straddle two reads, and
-        repro-scale output is small. The target dying mid-wait fails
+        being waited for. The stripped view is maintained incrementally
+        (ansi.Stripper), but it is exact ANSI.sub semantics, not a tail
+        heuristic: an escape sequence can straddle two reads, and a
+        boundary that didn't respect that would stop a marker split
+        across reads from ever matching. The target dying mid-wait fails
         fast (TargetDied) instead of burning the whole budget: with its
         last fd closed the pattern cannot arrive any more, so waiting
         is guaranteed futile. The pattern is re-checked before the
@@ -334,18 +361,20 @@ class Session:
         what = step if step is not None else \
             pattern.pattern.decode('utf-8', 'replace')
         timeout = self.wait_for_timeout if timeout is None else timeout
-        skip = len(ANSI.sub(b'', self._out)) if only_new else 0
+        stripped = self.stripped()
+        skip = len(stripped) if only_new else 0
         deadline = time.time() + timeout
-        while not pattern.search(ANSI.sub(b'', self._out)[skip:]):
+        while not pattern.search(stripped[skip:]):
             remaining = deadline - time.time()
             if remaining <= 0:
-                tail = ANSI.sub(b'', self._out)[skip:][-200:]
+                tail = stripped[skip:][-200:]
                 tail = tail.decode('utf-8', 'replace')
                 raise WaitForTimeout(
                     f'{label} step {what!r}: no match within {timeout:g}s -- '
                     f'last output seen (ANSI-stripped): {tail!r}'
                 )
             self.drain(min(DRAIN_POLL, remaining))
+            stripped = self.stripped()
             if self.proc.poll() is not None:
                 raise TargetDied(
                     f'target {_exit_status_why(self.proc.returncode)} while '
@@ -367,7 +396,8 @@ class Session:
 
     def close(self):
         """Reap the target, close the pty, write the capture file if one
-        was configured. Idempotent, and safe to call after a failed
+        was configured (mode 0600 -- a capture is transcript content,
+        NOTES.md's gotcha). Idempotent, and safe to call after a failed
         start() -- the finally-block shape every driver of this class
         should use. The capture is the RAW, unstripped stream:
         --raw/--capture-out's stdout stripping is the CLI's business,
@@ -384,7 +414,16 @@ class Session:
         self._closed = True
         if self._started and self.capture_path is not None:
             try:
-                with open(self.capture_path, 'wb') as f:
+                fd = os.open(self.capture_path,
+                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, 'wb') as f:
+                    # fchmod even when O_CREAT didn't fire: a rerun over
+                    # an existing wider-mode capture must not leave the
+                    # old permissions on the new content. 0600 rather
+                    # than trusting the umask because a capture is
+                    # transcript content (NOTES.md's gotcha) -- pty
+                    # echo of typed steps included.
+                    os.fchmod(f.fileno(), 0o600)
                     f.write(self._out)
             except OSError as e:
                 print(f'terminal-puppeteer: warning: could not write '

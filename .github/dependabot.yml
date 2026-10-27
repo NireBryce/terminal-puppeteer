@@ -1,0 +1,11 @@
+# The third-party Actions in .github/workflows/ are pinned to commit
+# SHAs (supply-chain hardening, 0.5.1) -- Dependabot is what keeps
+# those pins from going silently stale: it reads each `# vX` comment
+# for the version label and opens one PR per update. Weekly is plenty
+# for a two-workflow repo.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -134,23 +134,45 @@ banner/prompt), and then reads the same step vocabulary from stdin one
 line at a time -- '#' lines are comments, ':quit' or EOF ends the
 session (a final settle drain, then the target is terminated). After
 each step it prints just the NEW output since the last one (stripped
-unless --raw) followed by a '<< DONE' sentinel line; a failed step
-(target death, WAIT-FOR timeout) prints its fresh output and
-'<< DEAD <why>' instead. Exactly one response per step line, always,
-and the exit code says which way the session ended (0 for :quit/EOF,
-1 for DEAD) -- so a driving agent can send a line, read the response,
-and decide the next line without ever waiting on a sentinel that won't
-come. The Session class behind it (terminal_puppeteer.session: start/
-send_step/expect/resize/close) is importable for the same style of use
-from Python.
+unless --raw, capped like any stdout below) followed by a '<< DONE'
+sentinel line; a failed step (target death, WAIT-FOR timeout) prints
+its fresh output and '<< DEAD <why>' instead. Exactly one response per
+step line, always, and the exit code says which way the session ended
+(0 for :quit/EOF, 1 for DEAD) -- so a driving agent can send a line,
+read the response, and decide the next line without ever waiting on a
+sentinel that won't come. With --screen the response is not the byte
+delta but the live grid: a persistent rows-x-cols screen fed the whole
+session, so a chatty full-screen target costs the same bounded render
+every step. The Session class behind it (terminal_puppeteer.session:
+start/send_step/expect/resize/close) is importable for the same style
+of use from Python.
 
-Viewing the output: --screen renders the final capture as an actual
-terminal grid (--rows/--cols sized) instead of a byte stream. The flat
-transcript interleaves a live line editor's redraws with its text --
-backspaces left as literal characters, cursor moves invisible -- and a
-grid shows what a terminal was actually displaying: zsh's 'eecho hi'
-artifact renders as 'echo hi', ble.sh's cursor-glyph probe renders as
-plain bracketed text. It is a layout-only ANSI interpreter (cursor
+Viewing the output: stdout is capped by default -- --max-output bytes
+(default 30000) of the rendered view, then one loud marker line naming
+the cut size and the ways out. An agent's transcript should hold what
+it chose to look at, not whatever volume the target produced -- the
+same rule every agent-facing tool converges on: complete artifact,
+bounded presentation, loud pointer between them. The complete artifact
+is --capture-out FILE (never capped, written on every exit path);
+--full-output is the opt-out that puts everything in context, one-shot
+stdout and every --repl response alike.
+
+--show FILE reads a capture file back instead of driving a target:
+the same views as a run (ANSI-stripped by default, --raw, --screen of
+the whole capture), plus line selection over the viewed bytes --
+--offset N (1-based first line), --limit N, --tail N (standalone).
+Line numbers are counted on what --show emits, so they match a grep
+over the same view. The intended loop for a big capture: keep it with
+--capture-out, grep/od the file, then page just the interesting ranges
+through --show into context.
+
+--screen renders the capture as an actual terminal grid
+(--rows/--cols sized) instead of a byte stream. The flat transcript
+interleaves a live line editor's redraws with its text -- backspaces
+left as literal characters, cursor moves invisible -- and a grid shows
+what a terminal was actually displaying: zsh's 'eecho hi' artifact
+renders as 'echo hi', ble.sh's cursor-glyph probe renders as plain
+bracketed text. It is a layout-only ANSI interpreter (cursor
 positioning, erase, insert/delete, scrolling, scroll regions), not a
 terminal emulator: colors and modes are parsed-and-discarded, truncated
 sequences render nothing (a real terminal is still waiting for their
@@ -166,6 +188,7 @@ capture instead of silent.
 import argparse
 import os
 import shlex
+import signal
 import sys
 
 from ._version import __version__
@@ -180,14 +203,18 @@ from .keys import (
     print_key_list,
     warn_if_near_miss,
 )
-from .screen import render
+from .screen import Screen, render, utf8_safe_len
 from .session import Session
 
 
 def load_steps(args):
     steps = list(args.steps)
     if args.steps_file:
-        f = sys.stdin if args.steps_file == '-' else open(args.steps_file)
+        # UTF-8 regardless of locale: steps are keystrokes, and a file
+        # an agent wrote is UTF-8 -- decoding it in the machine's
+        # locale would silently send mojibake under anything else.
+        f = sys.stdin if args.steps_file == '-' \
+            else open(args.steps_file, encoding='utf-8')
         try:
             for line in f:
                 line = line.strip()
@@ -241,6 +268,79 @@ def maybe_note_bels(p, args, output):
         )
 
 
+def capped(text, args, what, pointer):
+    """The stdout cap: past --max-output bytes, cut the rendered view
+    and append one loud marker naming the cut and the ways out. The
+    capture (--capture-out) is never capped -- the tool's contract is
+    that the record doesn't lie, so the cap bounds only what enters an
+    agent's transcript, and the marker always says where the rest is.
+    Loud, never silent: a transcript that just stopped early would be
+    indistinguishable from a quiet target."""
+    if args.full_output or len(text) <= args.max_output:
+        return text
+    marker = (f'\n[[ terminal-puppeteer: {what} truncated at '
+              f'{args.max_output} bytes of {len(text)} -- {pointer} ]]\n')
+    return text[:args.max_output] + marker.encode()
+
+
+def select_lines(data, offset, limit, tail):
+    """Line selection for --show, over the bytes as viewed (stripped
+    unless --raw, so the numbers match a grep over the same view).
+    Lines split on \\n; a trailing final newline terminates the last
+    line rather than adding an empty one, matching how editors and the
+    Read-style tools agents already use count. --tail stands alone;
+    --offset is 1-based; --limit caps the run of lines from --offset."""
+    lines = data.split(b'\n')
+    if lines and lines[-1] == b'':
+        lines.pop()
+    if tail is not None:
+        return b'\n'.join(lines[-tail:])
+    start = (offset - 1) if offset is not None else 0
+    lines = lines[start:]
+    if limit is not None:
+        lines = lines[:limit]
+    return b'\n'.join(lines)
+
+
+def write_output(data):
+    """The one stdout exit: the view, plus the trailing newline every
+    run's stdout has always ended with (unconditional — a view that
+    already ends in a newline gets the blank-line terminator too; that
+    wart is the byte-for-byte contract the tests and consumers pin).
+    A capped view ends in its marker's newline, then this one."""
+    out = sys.stdout.buffer
+    out.write(data)
+    out.write(b'\n')
+
+
+def show_capture(p, args):
+    """--show: read a capture file back through the same views a run
+    gets -- stripped bytes, --raw, or a --screen grid -- with line
+    selection over the viewed bytes and the same stdout cap. Reads
+    only; no target, no steps, no pty."""
+    try:
+        with open(args.show, 'rb') as f:
+            data = f.read()
+    except OSError as e:
+        p.exit(1, f'{p.prog}: error: could not read {args.show!r}: '
+                  f'{e.strerror or e}\n')
+    if args.screen:
+        text = render(data, rows=args.rows, cols=args.cols)
+        shown = text.encode('utf-8')
+        pointer = (f'{args.show!r} holds the whole capture '
+                   f'(--full-output lifts the cap)')
+        what = 'rendered screen'
+    else:
+        shown = select_lines(data if args.raw else ANSI.sub(b'', data),
+                             args.offset, args.limit, args.tail)
+        pointer = (f'{args.show!r} holds all of it '
+                   f'(--offset/--limit/--tail select, '
+                   f'--full-output lifts the cap)')
+        what = 'output'
+    write_output(capped(shown, args, what, pointer))
+    return 0
+
+
 def drive_repl(p, args, argv, env):
     """The --repl loop: the same step vocabulary as a one-shot run, read
     line-by-line from stdin so an agent can pace itself on the target's
@@ -262,9 +362,41 @@ def drive_repl(p, args, argv, env):
         rows=args.rows, cols=args.cols, capture_path=args.capture_out,
     )
     out = sys.stdout.buffer
+    # --screen + --repl is the live grid: one persistent rows-x-cols
+    # screen fed the whole session, emitted after every step -- the
+    # bounded view of a chatty full-screen target, the same shape
+    # --repl's byte deltas have for line-oriented ones. Feeds hold
+    # back anything that could still be completed by later bytes:
+    # escape sequences (bytes from the last ESC on -- the renderer
+    # consumes a truncated sequence as gone-for-good) and partial
+    # multi-byte characters (utf8_safe_len), either of which split
+    # across feeds would render wrong. The settle drain at :quit is
+    # never emitted (byte mode discards it too), so no end-of-session
+    # flush of the holdback exists -- deliberate.
+    screen_view = Screen(args.rows, args.cols) if args.screen else None
+    holdback = bytearray()
 
-    def emit(delta):
-        text = delta if args.raw else ANSI.sub(b'', delta)
+    def emit(delta, what='response'):
+        if screen_view is not None:
+            holdback.extend(delta)
+            cut = holdback.rfind(b'\x1b')
+            if cut == -1:
+                cut = len(holdback)
+            # Hold back an incomplete multi-byte character too, the
+            # same way the ESC hold above holds a truncated sequence:
+            # a character split across feeds would otherwise decode to
+            # replacement glyphs.
+            safe = utf8_safe_len(bytes(holdback[:cut]))
+            screen_view.feed(bytes(holdback[:safe]).decode('utf-8',
+                                                           'replace'))
+            del holdback[:safe]
+            text = screen_view.text().encode('utf-8')
+        else:
+            text = delta if args.raw else ANSI.sub(b'', delta)
+        text = capped(
+            text, args, what,
+            'add --capture-out FILE to the session for the full capture, '
+            'or --full-output to see everything')
         if text:
             out.write(text)
             if not text.endswith(b'\n'):
@@ -279,7 +411,7 @@ def drive_repl(p, args, argv, env):
         # The startup capture -- whatever the connect-wait window caught,
         # usually the banner/prompt -- reports before the first step is
         # read, so a driver sees where it's typing into.
-        emit(session.output)
+        emit(session.output, what='startup capture')
         out.write(b'<< DONE\n')
         out.flush()
         for line in sys.stdin:
@@ -307,10 +439,33 @@ def drive_repl(p, args, argv, env):
         maybe_note_bels(p, args, session.output)
 
 
+def _install_signal_cleanup():
+    """SIGTERM/SIGHUP get the cleanup Ctrl-C already gets. Ctrl-C raises
+    KeyboardInterrupt, which unwinds through every try/finally on the
+    way out -- run()'s and drive_repl's -- reaping the target and
+    writing --capture-out; the default disposition of SIGTERM/SIGHUP
+    kills the process without any of that, so an agent harness killing
+    a timed-out tool would lose the capture file and orphan the target.
+    Converting the signal to SystemExit sends it down the same unwind;
+    128+N is the died-by-signal exit-status convention."""
+    def handler(signum, frame):
+        raise SystemExit(128 + signum)
+
+    for name in ('SIGTERM', 'SIGHUP'):
+        num = getattr(signal, name, None)
+        if num is None:
+            continue
+        try:
+            signal.signal(num, handler)
+        except (ValueError, OSError):
+            pass  # not the main thread (ValueError): run unhandled
+
+
 def main():
     # __doc__'s first paragraph is this exact sentence -- drop it from the
     # epilog so --help doesn't print it twice (once as the description
     # right under usage, once again as the epilog's own opening line).
+    _install_signal_cleanup()
     p = argparse.ArgumentParser(
         description='Let an LLM agent drive a real interactive program through a pty.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -325,15 +480,21 @@ def main():
     target = p.add_mutually_exclusive_group()
     target.add_argument('--ssh', metavar='HOST', help='shorthand for --cmd "ssh -tt HOST"')
     target.add_argument('--cmd', metavar='COMMAND', help='shell-quoted command to run under a pty, e.g. \'bash -i\' or \'tmux attach -t work\'')
+    target.add_argument('--show', metavar='FILE', help="readback: emit a capture file written by --capture-out instead of driving a target -- same views as a run (ANSI-stripped by default, --raw, --screen), selectable by line with --offset/--limit/--tail")
     p.add_argument('steps', nargs='*', help='literal text or a named key (TAB, ENTER, CTRL-C, ...) -- see --list-keys')
     p.add_argument('--steps-file', help="read additional steps, one per line, from this file ('-' for stdin)")
-    p.add_argument('--repl', action='store_true', help="interactive: read steps from stdin one line at a time ('#' comments, ':quit' or EOF to finish), printing each step's new output then a '<< DONE' sentinel line ('<< DEAD <why>' if the step fails) -- no positional steps or --steps-file")
+    p.add_argument('--repl', action='store_true', help="interactive: read steps from stdin one line at a time ('#' comments, ':quit' or EOF to finish), printing each step's new output then a '<< DONE' sentinel line ('<< DEAD <why>' if the step fails); with --screen the response is the live grid; no positional steps or --steps-file")
+    p.add_argument('--max-output', type=int, default=30000, metavar='BYTES', help="cap on stdout (a run's view, each --repl response, --show) -- past it one loud marker names the cut and the way out; --capture-out is never capped (default: 30000)")
+    p.add_argument('--full-output', action='store_true', help="lift the output cap: everything in context, uncapped -- one-shot stdout and every --repl response; the complete-on-disk alternative is --capture-out")
+    p.add_argument('--offset', type=int, default=None, metavar='N', help='with --show: emit from 1-based line N (lines counted on the viewed bytes)')
+    p.add_argument('--limit', type=int, default=None, metavar='N', help='with --show: emit at most N lines from --offset')
+    p.add_argument('--tail', type=int, default=None, metavar='N', help='with --show: emit only the last N lines (standalone)')
     p.add_argument('--step-delay', type=float, default=1.5, help='seconds to wait for output after each step (default: 1.5)')
     p.add_argument('--settle', type=float, default=1.5, help='extra seconds to wait after the last step (default: 1.5)')
     p.add_argument('--connect-wait', type=float, default=3.0, help='seconds to wait for a banner/prompt before the first step (default: 3.0)')
     p.add_argument('--raw', action='store_true', help='print output with ANSI escape sequences intact instead of stripped')
-    p.add_argument('--screen', action='store_true', help="render the final capture as a terminal grid (--rows/--cols sized) instead of a byte stream -- a layout-only ANSI interpreter (cursor movement, erase, scrolling), not a terminal emulator; byte-level forensics still needs --raw/--capture-out")
-    p.add_argument('--capture-out', metavar='FILE', help="also write the raw, unstripped pty capture to this file -- stdout output unchanged, and the file is written even when the run fails mid-way (the partial capture is the diagnostic)")
+    p.add_argument('--screen', action='store_true', help="render the capture as a terminal grid (--rows/--cols sized) instead of a byte stream -- of a run's final capture, of each --repl step (the live grid), or of a whole --show file; a layout-only ANSI interpreter (cursor movement, erase, scrolling), not a terminal emulator; byte-level forensics still needs --raw/--capture-out")
+    p.add_argument('--capture-out', metavar='FILE', help="also write the raw, unstripped pty capture to this file, created 0600 (a capture is transcript content: NOTES.md's gotcha) -- stdout output unchanged, and the file is written even when the run fails mid-way (the partial capture is the diagnostic)")
     p.add_argument('--answer-queries', action='store_true', help="answer terminal capability queries (\\e[>c, \\e[6n, ...) with canned 'normal terminal' replies -- a target that probes-then-fallbacks can behave differently with no reply, so repros silently diverge from a real terminal (default: off, queries go unanswered)")
     p.add_argument('--wait-for-timeout', type=float, default=10.0, metavar='SECONDS', help='how long a WAIT-FOR step may wait for its pattern before failing the run (default: 10)')
     p.add_argument('--rows', type=int, default=24, metavar='ROWS', help='terminal rows reported to the target through the pty (default: 24)')
@@ -347,24 +508,97 @@ def main():
         print_key_list()
         return
 
-    if not args.ssh and not args.cmd:
-        p.error('one of the arguments --ssh --cmd is required')
+    if not args.ssh and not args.cmd and not args.show:
+        p.error('one of the arguments --ssh --cmd --show is required')
 
     if args.rows < 1 or args.cols < 1:
         # A 0x0 tty is exactly the bug the defaults exist to fix -- allow
         # overriding the size, not un-setting it.
         p.error('--rows/--cols must be at least 1')
 
+    if args.max_output < 1:
+        p.error('--max-output must be at least 1')
+
+    if not args.show and (args.offset is not None or args.limit is not None
+                          or args.tail is not None):
+        # Reached only on the run/repl paths (the --show block below
+        # exits first), so these would be silently ignored there.
+        p.error('--offset/--limit/--tail only apply to --show')
+
     if args.cmd and args.ssh_args:
         p.error('--ssh-arg only applies to --ssh')
 
+    if args.show and args.ssh_args:
+        p.error('--ssh-arg only applies to --ssh')
+
+    if args.screen and args.rows * args.cols > 4_000_000:
+        # A grid is rows*cols cells of Python strings; at the winsize
+        # ceiling (65535x65535) that is a 4-billion-cell grind, not
+        # even a clean MemoryError. This bounds the RENDERER only --
+        # the pty itself is fine at any winsize -- and 4M cells is
+        # already far past any readable screen.
+        p.error(f'--screen: {args.rows}x{args.cols} is '
+                f'{args.rows * args.cols} renderer cells -- keep '
+                f'rows*cols at 4000000 or less')
+
+    if args.show:
+        # A readback drives nothing, so everything with run semantics is
+        # refused the way --ssh-arg is: usage error, not silent ignore.
+        if args.repl:
+            p.error('--show reads a capture file; --repl drives a target')
+        if args.steps or args.steps_file:
+            p.error('--show reads an existing capture; steps drive a target')
+        if args.env_vars:
+            p.error('--env applies to a run, not to --show')
+        if args.answer_queries:
+            p.error('--answer-queries applies to a run, not to --show')
+        if args.verbose:
+            p.error('--verbose applies to a run, not to --show')
+        for flag, value, default in (('--step-delay', args.step_delay, 1.5),
+                                     ('--settle', args.settle, 1.5),
+                                     ('--connect-wait', args.connect_wait, 3.0),
+                                     ('--wait-for-timeout',
+                                      args.wait_for_timeout, 10.0)):
+            # A flag left at its default is indistinguishable from
+            # unset and changes nothing; only an explicit value is a
+            # misdirected attempt to pace a readback.
+            if value != default:
+                p.error(f'{flag} applies to a run, not to --show')
+        if args.capture_out:
+            p.error('--capture-out writes a capture from a run; --show only reads one')
+        if args.screen and (args.offset is not None or args.limit is not None
+                            or args.tail is not None):
+            p.error('--offset/--limit/--tail select lines of the byte '
+                    'stream; --screen renders a grid of the whole capture '
+                    '-- not combinable')
+        for name, value in (('offset', args.offset), ('limit', args.limit),
+                            ('tail', args.tail)):
+            if value is not None and value < 1:
+                p.error(f'--{name} must be at least 1')
+        if args.tail is not None and (args.offset is not None
+                                      or args.limit is not None):
+            p.error("--tail stands alone -- it can't combine with --offset/--limit")
+        sys.exit(show_capture(p, args))
+
     if args.ssh:
+        if args.ssh.startswith('-'):
+            # The host is one argv element, so this is option parsing,
+            # not injection -- but '--ssh -oProxyCommand=...' would land
+            # in ssh's option parser all the same. No real destination
+            # starts with '-'; real option passthrough is --ssh-arg.
+            p.error(f"--ssh: HOST {args.ssh!r} starts with '-' -- ssh "
+                    f"would parse it as an option, not a destination; "
+                    f"pass ssh options with --ssh-arg")
         argv = ['ssh', '-tt', *args.ssh_args, args.ssh]
     else:
         try:
             argv = shlex.split(args.cmd)
         except ValueError as e:
             p.error(f'--cmd: {e}')
+        if not argv:
+            # Whitespace or empty: shlex hands back no argv at all, and
+            # Popen's failure would be a bare IndexError traceback.
+            p.error('--cmd: empty command')
 
     env = None
     if args.env_vars:
@@ -378,14 +612,12 @@ def main():
     if args.repl:
         # The REPL's input IS stdin -- steps would collide with it, so
         # both other step sources are refused rather than silently
-        # concatenated or raced. --screen renders a FINAL capture; a
-        # live session has no final capture to render.
+        # concatenated or raced. --screen COMBINES with --repl now: the
+        # response becomes the live grid (see drive_repl).
         if args.steps:
             p.error('--repl reads steps from stdin as it goes; pass no positional steps')
         if args.steps_file:
             p.error('--repl reads steps from stdin as it goes; --steps-file does not apply')
-        if args.screen:
-            p.error('--screen applies to the final capture; it does not combine with --repl')
         sys.exit(drive_repl(p, args, argv, env))
 
     try:
@@ -422,14 +654,17 @@ def main():
         # The partial capture still goes to stdout first -- it is the
         # diagnostic (typically the target's own dying words), stripped
         # the same as a successful run's, or gridded the same when
-        # --screen is on.
+        # --screen is on, capped the same too (the full partial capture
+        # is in --capture-out if one was configured).
         if args.screen:
             captured = render(e.output, rows=args.rows,
                               cols=args.cols).encode('utf-8')
         else:
             captured = e.output if args.raw else ANSI.sub(b'', e.output)
-        sys.stdout.buffer.write(captured)
-        sys.stdout.buffer.write(b'\n')
+        write_output(capped(captured, args, 'partial capture',
+                            'add --capture-out FILE to keep the full '
+                            'capture on disk, or --full-output to print '
+                            'everything'))
         p.exit(1, f'{p.prog}: error: {e}\n')
     maybe_note_bels(p, args, out)
     if args.screen:
@@ -440,13 +675,16 @@ def main():
         # the raw capture; the grid contains no ANSI by construction,
         # so --raw has nothing to change here.
         rendered = render(out, rows=args.rows, cols=args.cols)
-        sys.stdout.buffer.write(rendered.encode('utf-8'))
-        sys.stdout.buffer.write(b'\n')
+        write_output(capped(rendered.encode('utf-8'), args, 'rendered screen',
+                            'add --capture-out FILE to keep the full '
+                            'capture on disk, or --full-output to print '
+                            'everything'))
         return
     if not args.raw:
         out = ANSI.sub(b'', out)
-    sys.stdout.buffer.write(out)
-    sys.stdout.buffer.write(b'\n')
+    write_output(capped(out, args, 'output',
+                        'add --capture-out FILE to keep the full capture '
+                        'on disk, or --full-output to print everything'))
 
 
 if __name__ == '__main__':

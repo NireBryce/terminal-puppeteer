@@ -51,7 +51,8 @@ installs to `share/man/man1/` with `pip install .`.
 
 ```sh
 # drive a local interactive shell: type a command, submit it, read the
-# transcript (everything the pty produced, ANSI-stripped by default)
+# transcript (ANSI-stripped, capped at --max-output by default;
+# --capture-out keeps the complete capture, --full-output prints it all)
 ./terminal-puppeteer.py --cmd 'bash -i' 'echo hello' ENTER
 
 # over ssh — the case this was built for
@@ -69,6 +70,7 @@ printf 'echo hi\nENTER\n' | ./terminal-puppeteer.py --cmd 'bash -i' --repl
 
 ---
 
-*Facts on this page checked against terminal-puppeteer 0.5.0, empirically
-(2026-09-09) — see issue #64. If a claim here and the tool's behavior
-disagree, the tool wins: file an issue.*
+*Facts on this page checked against terminal-puppeteer 0.6.0, empirically
+(2026-10-26) — originally under issue #64; re-verified through 0.5.1's
+security pass and 0.6.0's output-cap changes. If a claim here and the
+tool's behavior disagree, the tool wins: file an issue.*

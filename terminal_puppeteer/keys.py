@@ -60,9 +60,10 @@ PASTE_PREFIX = 'PASTE:'
 
 # decode_raw()'s single-character escapes -- the same set bind and `echo
 # -e` understand, minus the ones this vocabulary has no use for (\c, \0).
+# \E is echo -e's other spelling of escape (bind only has \e).
 RAW_CHAR_ESCAPES = {
     'a': b'\a', 'b': b'\b', 't': b'\t', 'n': b'\n', 'v': b'\v',
-    'f': b'\f', 'r': b'\r', 'e': b'\x1b', '\\': b'\\',
+    'f': b'\f', 'r': b'\r', 'e': b'\x1b', 'E': b'\x1b', '\\': b'\\',
 }
 
 # SLEEP <seconds> / WAIT <seconds> -- a driver-side pause, not a write:
@@ -128,10 +129,14 @@ def decode_raw(text):
             out += RAW_CHAR_ESCAPES[n]
             i += 2
         elif n in 'Cc' and i + 3 < len(text) and text[i + 2] == '-' and (
-                text[i + 3].isalpha() or text[i + 3] in r'@[\]^_'):
+                text[i + 3] in string.ascii_letters
+                or text[i + 3] in r'@[\]^_'):
             # \C-x / \c-x: ord(key) & 0x1f is the control-code formula
-            # bind itself uses -- covers letters both cases plus @[\]^_,
-            # e.g. \C-[ = \x1b, same byte as \e.
+            # bind itself uses -- covers ASCII letters both cases plus
+            # @[\]^_, e.g. \C-[ = \x1b, same byte as \e. ASCII only:
+            # str.isalpha() would let a non-ASCII letter through and
+            # ord()&0x1f it into an unrelated control byte (\C-é would
+            # send TAB); an unknown key stays literal instead.
             out.append(ord(text[i + 3].upper()) & 0x1f)
             i += 4
         elif n == 'x':

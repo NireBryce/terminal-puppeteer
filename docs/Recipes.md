@@ -53,10 +53,11 @@ commands. Two fixes, in order of preference:
 
 ## Reading what came back
 
-Default stdout is the flat transcript: everything the pty produced,
-ANSI escape sequences stripped, in arrival order — read it like a
-terminal transcript, prompt lines and command output interleaved. The
-views on top of the same capture:
+Default stdout is the flat transcript — ANSI escape sequences
+stripped, in arrival order, **capped at `--max-output` bytes (30000)**
+with one loud marker naming the cut. Read it like a terminal
+transcript, prompt lines and command output interleaved. The views on
+top of the same capture:
 
 - `--raw` — keep the escape sequences. Ground truth for anything the
   other views might be interpreting.
@@ -69,7 +70,17 @@ views on top of the same capture:
   zsh's `eecho hi` redraw artifact renders as `echo hi`, redraw-heavy
   prompts show their final state once. Colors/modes are not kept;
   every codepoint is one cell; byte-level questions still need
-  `--raw`/`--capture-out` and `od`. Does not combine with `--repl`.
+  `--raw`/`--capture-out` and `od`. With `--repl` it goes live: each
+  step's response is the current grid instead of the byte delta.
+- `--full-output` — lift the cap: everything in context, uncapped.
+
+**The loop for a big capture**: keep the complete bytes with
+`--capture-out` (never capped), grep/od the file, then page just the
+interesting ranges back through `--show` — `--tail 40`, or
+`--offset N --limit M` around what the grep found (line numbers are
+counted on the view `--show` emits, so they match a grep over the same
+view). An agent's transcript should hold what it chose to look at, not
+whatever volume the target produced.
 
 One stderr note may join any run: the count of BEL (`\x07`) bytes the
 target sent — invisible in every view, but the standard unbound-key /
@@ -139,7 +150,8 @@ any early `'export TERM=dumb' ENTER` step).
 
 A credential typed as a step is transcript content — `-v` echoes
 steps, the capture contains the pty's echo, positional steps sit in
-shell history. Hand secrets to the target out-of-band (inherited
+shell history, and stderr failure messages name un-sent steps even
+without `-v`. Hand secrets to the target out-of-band (inherited
 environment, target-side config); NOTES.md has the full account.
 
 ## Exiting
@@ -157,5 +169,6 @@ which is why the check exists.
 
 ---
 
-*Facts checked against terminal-puppeteer 0.5.0, empirically
-(2026-09-09) — see issue #64.*
+*Facts checked against terminal-puppeteer 0.6.0, empirically
+(2026-10-26) — originally under issue #64; re-verified through 0.5.1's
+security pass and 0.6.0's output-cap changes.*

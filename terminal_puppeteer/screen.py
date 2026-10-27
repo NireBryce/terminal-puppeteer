@@ -40,6 +40,36 @@ _CSI_INTERMEDIATE = re.compile(r'[\x20-\x2f]*')
 _CSI_FINAL = re.compile(r'[\x40-\x7e]')
 
 
+def utf8_safe_len(buf):
+    """Length prefix of `buf` with no partial multi-byte character at
+    its end -- the incremental feeder's twin of "don't consume a
+    truncated escape sequence": a character split across two feeds
+    would otherwise decode to replacement glyphs. 0 means "all of it
+    is one character still waiting for its tail" (or an empty buffer).
+    A run of continuation bytes with no lead before them is stray, not
+    partial -- holding it would freeze the feeder waiting for a lead
+    that was already consumed -- so it passes through for the decoder
+    to replace. Invalid lead bytes (0xfe/0xff) likewise: not this
+    function's business."""
+    i = len(buf) - 1
+    while i >= 0 and (buf[i] & 0xC0) == 0x80:
+        i -= 1
+    if i < 0:
+        return len(buf)  # stray continuations, no lead: not partial
+    lead = buf[i]
+    if lead < 0x80:
+        return len(buf)
+    if lead & 0xE0 == 0xC0:
+        need = 2
+    elif lead & 0xF0 == 0xE0:
+        need = 3
+    elif lead & 0xF8 == 0xF0:
+        need = 4
+    else:
+        return len(buf)  # invalid lead: let the decoder replace it
+    return i if len(buf) - i < need else len(buf)
+
+
 class Screen:
     """A rows x cols grid of characters with a cursor, scroll region,
     and the interpreter state (deferred autowrap, saved cursor). feed()
@@ -285,12 +315,19 @@ class Screen:
             row[self.col:] = row[self.col + count:] + [' '] * count
         elif final == 'L':   # IL
             if self.top <= self.row <= self.bottom:
-                for _ in range(p(0, 1)):
+                # Clamped to the region at/below the cursor, same shape
+                # as scroll_up's clamp to the region: the CSI parameter
+                # has no length cap, and the capture is the target's
+                # input -- an ESC[999999999999L in it must be a bounded
+                # edit, not hours of del/insert spinning the loop.
+                count = min(p(0, 1), self.bottom - self.row + 1)
+                for _ in range(count):
                     del self.grid[self.bottom]
                     self.grid.insert(self.row, [' '] * self.cols)
         elif final == 'M':   # DL
             if self.top <= self.row <= self.bottom:
-                for _ in range(p(0, 1)):
+                count = min(p(0, 1), self.bottom - self.row + 1)
+                for _ in range(count):
                     del self.grid[self.row]
                     self.grid.insert(self.bottom, [' '] * self.cols)
         elif final == 'S':   # SU

@@ -76,6 +76,9 @@ printf 'echo hi\nENTER\n' | ./terminal-puppeteer.py --cmd 'bash -i' --repl
 
 # what "TAB", "CTRL-U", etc. actually send, without a trip to the docs
 ./terminal-puppeteer.py --list-keys
+
+# read a capture back: the last lines, or a chosen range of the view
+./terminal-puppeteer.py --show repro.cap --tail 40
 ```
 
 Output is everything the pty produced, ANSI escape sequences stripped by
@@ -248,7 +251,8 @@ One caveat for sensitive values: `--env`'s arguments sit in this tool's
 own argv, visible in `ps` to other local users — a secret is better off
 in the launching shell's environment, which the target inherits anyway.
 More generally: a credential typed as a step is transcript content
-(stderr echoes, captures, capture files) — see NOTES.md's
+(stderr echoes — failure messages name un-sent steps even without `-v`
+— captures, and capture files, which are created 0600) — see NOTES.md's
 "transcript content" gotcha for the out-of-band shapes that keep
 secrets out of steps entirely.
 
@@ -278,7 +282,9 @@ and then reads the same step vocabulary from stdin one line at a time —
 `#` lines are comments, `:quit` or EOF ends the session (a final
 `--settle` drain, then the target is terminated as always). After each
 step it prints just the NEW output since the last one — stripped unless
-`--raw` — followed by a sentinel line:
+`--raw`, capped like any stdout (the marker lands inside the response,
+before the sentinel; `--full-output` lifts it) — followed by a sentinel
+line:
 
     << DONE
 
@@ -306,6 +312,28 @@ The `Session` class behind it (`terminal_puppeteer.session`: `start`/
 `send_step`/`expect`/`resize`/`close`) is importable for the same style
 of use from Python, and `driver.run()` is a thin loop over it — one
 code path for both, not two that drift.
+
+## The output cap
+
+stdout is capped by default: `--max-output` bytes (30000) of the rendered
+view — whichever view, `--screen` included — then one loud marker line
+naming the cut and the ways out:
+
+    [[ terminal-puppeteer: output truncated at 30000 bytes of 128895 -- add --capture-out FILE to keep the full capture on disk, or --full-output to print everything ]]
+
+The reasoning is the rule every agent-facing tool converges on:
+**complete artifact, bounded presentation, loud pointer between them.**
+An agent's transcript should hold what it chose to look at, not whatever
+volume the target produced — megabytes of capture in context is
+unfilterable after the fact, buries the signal, and buries any secret
+that crossed the screen with it. `--repl` responses are capped per step,
+the same way (the sentinel protocol is unchanged: the marker is part of
+the response, before `<< DONE`).
+
+The complete artifact is `--capture-out FILE` — never capped, written on
+every exit path, created 0600. `--full-output` is the deliberate opt-out
+that puts everything in context instead: one-shot stdout and every
+`--repl` response, uncapped.
 
 ## Viewing the output: `--screen`
 
@@ -335,15 +363,52 @@ doubly, so an exact captured value still needs `--raw`/
 `--capture-out` and `od`; and when a render looks impossible, look at
 the raw capture before believing either view — the renderer
 implements a documented subset, and `--raw` is the ground truth it
-renders. `--capture-out` still carries the raw bytes either way, and
-`--screen` does not combine with `--repl` (a live session has no
-final capture to render).
+renders. `--capture-out` still carries the raw bytes either way.
+With `--repl`, `--screen` is the *live* mode: the response to each
+step is the current grid — one persistent screen fed the whole
+session — bounded rows × cols however much the target spews, which is
+the natural pairing for full-screen repros the same way byte deltas
+are for line-oriented ones.
+
+## Reading a capture back: `--show`
+
+`--show FILE` emits a capture file written by `--capture-out` instead
+of driving a target — the same views as a run (ANSI-stripped by
+default, `--raw`, `--screen` of the whole capture), plus line
+selection over the viewed bytes: `--offset N` (1-based first line),
+`--limit N`, `--tail N`. Line numbers are counted on what `--show`
+emits — the stripped view unless `--raw` — so they match a grep run
+over the same view. The intended loop for a big capture: keep it with
+`--capture-out`, grep/od the file, then page just the interesting
+ranges through `--show` into context:
+
+    ./terminal-puppeteer.py --show repro.cap --tail 40
+    ./terminal-puppeteer.py --show repro.cap --offset 1200 --limit 80
+    grep -n 'MARK-4-2' repro.cap   # then --offset around what it finds
+
+## Known limits
+
+- A `WAIT-FOR` `/regex/` runs under Python's `re` with no watchdog — the
+  `--wait-for-timeout` budget is checked between drains, not during a
+  search, so a catastrophically backtracking pattern can out-wait it
+  inside one search. The pattern is yours; prefer the literal form when
+  a regex isn't needed (NOTES.md's "your own CPU budget").
+- The capture accumulates in memory for the session's whole life — the
+  record must be complete, so there's no cap on it. Fine at repro
+  scale; for a long `--repl` session against a chatty target, fetch
+  big output out-of-band (NOTES.md's fetch gotcha).
+- `--screen` is a layout renderer, not a terminal emulator (see its
+  section above) — for byte-level truth, `--raw`/`--capture-out`.
 
 ## Exit behavior
 
 On its way out this **only ever terminates the target process** (SIGTERM,
 then SIGKILL after 5 seconds if it's still alive) — it never types
-anything to close it. There's no single "graceful quit" keystroke that's
+anything to close it. If the *tool itself* is killed by a signal — a
+harness timing out sends SIGTERM, a closing terminal sends SIGHUP — the
+same cleanup runs anyway: the target is reaped and any `--capture-out`
+file is written with the capture so far, and the exit status is the
+died-by-signal convention 128+N (143/129). There's no single "graceful quit" keystroke that's
 correct across every target (`exit`+`ENTER` for a shell, `CTRL-D` for a
 REPL, a whole different key for `tmux`), so this doesn't guess. Include
 whatever quit step actually applies to your target as the last entry in
@@ -352,7 +417,9 @@ your own step list if a clean logout matters for what you're checking.
 If the target exits on its own **while steps remain to be sent** — a
 crash, an unwelcome startup, a typo'd target — the run fails loudly:
 exit 1, the partial capture still on stdout (it's the diagnostic,
-usually the target's dying words), and one stderr line naming the exit
+usually the target's dying words — capped like any stdout, with the
+full partial in `--capture-out` if one was configured), and one stderr
+line naming the exit
 status or signal and what was in progress. A death between steps names
 how many steps were never sent and which step would have been next; a
 death during a `WAIT-FOR` names the pattern that can no longer arrive.
@@ -374,11 +441,13 @@ size mid-run.
 
 `--capture-out FILE` also writes the raw, unstripped pty capture to a
 file — `--raw` changes stdout's rendering only, and the file always gets
-the bytes exactly as they came off the pty. Written on every exit path:
+the bytes exactly as they came off the pty. Created 0600 (a capture is
+transcript content — see Environment, above). Written on every exit path:
 a run that fails mid-way (target death, WAIT-FOR timeout) still leaves
 the partial capture in the file, which is the diagnostic. For byte-exact
 work (`od`-level checks, or feeding a capture to another tool) this
-beats scraping stdout.
+beats scraping stdout — and it is the complete artifact the output cap
+points at; `--show FILE` reads it back in views and line ranges.
 
 `--verbose`/`-v` prints each step to stderr as it's sent (`>> TAB`), for
 watching a long or slow multi-step run happen live instead of waiting
