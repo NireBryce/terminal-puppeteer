@@ -2,7 +2,7 @@
 pty/subprocess mechanics, the query responders, and the whole per-step
 dispatch live there) through a flat list of steps and returns the raw
 capture. This module is the step-list narrative on top -- the
-i-of-N bookkeeping, the between-steps death check's message -- plus
+idx-of-N bookkeeping, the between-steps death check's message -- plus
 re-exports of the Session-core names the CLI and existing callers
 import from here, so driver.run()/drain()/TargetDied/WaitForTimeout
 keep working unchanged. See terminal_puppeteer.cli for the CLI surface
@@ -38,7 +38,7 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
     )
     try:
         session.start()
-        for i, step in enumerate(steps):
+        for step_idx, step in enumerate(steps):
             # The between-steps death check lives in send_step; what
             # run() adds is the step-list narrative: how many steps
             # were never sent and which one would have been next. The
@@ -47,8 +47,8 @@ def run(argv, steps, step_delay, settle, connect_wait, env=None, verbose=False,
             # echo of steps typed at a corpse, which is why the message
             # spells out that distinction.
             session.send_step(step, on_death=(
-                f'after {i} of {len(steps)} steps; '
-                f'{len(steps) - i} not sent, next would be {step!r} -- '
+                f'after {step_idx} of {len(steps)} steps; '
+                f'{len(steps) - step_idx} not sent, next would be {step!r} -- '
                 f'the captured output is the pty echo of your steps, '
                 f'not the target responding'))
         session.drain(settle)
