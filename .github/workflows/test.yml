@@ -7,8 +7,11 @@ on:
 
 jobs:
   test:
-    # pty is POSIX-only, and so is this tool -- ubuntu-latest only, no OS matrix.
-    runs-on: ubuntu-latest
+    # pty is POSIX-only, and so is this tool -- Ubuntu only, no OS matrix.
+    # Pinned to 24.04, not ubuntu-latest: latest moved to 26.04, which
+    # setup-python has no Python 3.9 for, and the 3.9 failure cancelled
+    # the 3.13/3.14 jobs (matrix fail-fast) before any test ran.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         # 3.14 is what this project's own author machine and the nix
