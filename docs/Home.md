@@ -33,6 +33,8 @@ verified on Linux):
 ```sh
 # in place, from a checkout — grab the whole directory, not just the
 # script: the wrapper needs its sibling terminal_puppeteer/ package
+# (underscored: it's the Python import name, and a hyphen isn't valid in
+# one; terminal-puppeteer is the project/command name)
 ./terminal-puppeteer.py --cmd 'bash -i' 'echo $-' ENTER
 
 # pip install . gives a terminal-puppeteer command instead (no .py)
