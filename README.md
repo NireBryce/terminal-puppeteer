@@ -96,7 +96,12 @@ transcript, in order, prompt lines and command output interleaved. One
 advisory stderr note may join it: if any BEL (`\x07`) bytes came back
 from the target — invisible in both stripped and raw output, but the
 standard unbound-key/alert signal — the count is printed after the run,
-so a bell-heavy capture doesn't look identical to a bell-free one.
+so a bell-heavy capture doesn't look identical to a bell-free one. With
+`-v` the note instead names the step each bell arrived under (`1 BEL
+during step 3 (TAB)`, or `startup`) — attributed to the step whose
+output window delivered it, so a delayed reaction can land under the
+next step. In `--repl` the response carries `<< NOTE <n> BEL (0x07)
+byte(s) during this step` just before its `<< DONE`/`<< DEAD`.
 
 Full reference: `--help`, or `man ./man/terminal-puppeteer.1` (installed
 to the usual `man(1)` location if this was `pip install`ed rather than
@@ -232,6 +237,23 @@ More step forms cover what named keys can't express:
   "after" is a length measured on the stripped stream, and one escape
   sequence can straddle it, so it's exact to within about one escape
   sequence at the boundary.
+- **`WAIT-FOR-SCREEN:<pattern>`** — the same pattern forms and timeout,
+  matched against the *rendered screen* (the `--screen` grid) as it is
+  now, not against everything ever drawn. Text that was drawn and then
+  erased or replaced (a menu, an fzf overlay, an error line that went
+  away) cannot satisfy it. `^`/`$` anchor per screen row. A leading
+  `!` negates — `WAIT-FOR-SCREEN:!error` waits until `error` is *not*
+  on the screen (a literal pattern that itself starts with `!` goes in
+  the regex form, `/!.../`). Failure shape is WAIT-FOR's: exit 1, one
+  stderr line, the screen at timeout. Inherits the renderer's limits
+  (layout subset, no alternate-screen buffer), and renders at the pty's
+  current size (after a `RESIZE`, the whole capture re-renders at the
+  new size).
+- **`SCREEN`** — send nothing; print the rendered grid of the capture
+  so far, right then. In a one-shot run each snapshot lands on stdout
+  as `-- SCREEN <n> --` plus the grid (capped like any stdout), ahead
+  of the final view; in `--repl` it is that step's response. Uppercase
+  only — `screen` is a real command a repro might type.
 
 **No step ever gets an implicit trailing newline.** That's what lets a step
 be a bare `TAB` or a partial line someone's about to keep typing — but it

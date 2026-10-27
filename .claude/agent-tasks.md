@@ -33,6 +33,9 @@ the reasoning isn't lost.
 
 ## Done
 
+- [x] **#66 `SCREEN`, #67 `WAIT-FOR-SCREEN:`, #68 per-step BEL notes** —
+  0.7.0 (2026-10-27). Not yet shipped as a PR; details in DEVLOG.
+
 - [x] **#58: death-race tests made deterministic** — 2026-09-08. Root
   cause: bash's STARTUP (and even the gap between its last two
   statements) can stretch past any fixed check window under load;

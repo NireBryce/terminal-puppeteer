@@ -13,6 +13,27 @@ or a commit message instead.
 
 ---
 
+## 2026-10-27 — 0.7.0: `SCREEN`, `WAIT-FOR-SCREEN:`, per-step BEL notes
+
+Closes #66, #67, #68 (all filed from one ble.sh/fzf debugging session).
+
+- **`SCREEN`** (uppercase only — `screen` is a real command): renders
+  the capture so far via `screen.render` at the pty's current size.
+  One-shot: `-- SCREEN n --` block on stdout ahead of the final view;
+  `--repl`: the step's response. `Session.snapshot()` / `on_screen`.
+- **`WAIT-FOR-SCREEN:[!]<pattern>`**: `Session.expect_screen` polls the
+  rendered grid (`^`/`$` per row); `!` negates. Same timeout/exit shape
+  as WAIT-FOR. Re-renders only when the capture grew.
+- **BEL attribution**: `Session.bel_log` of (step#, step, count),
+  step 0 = startup; `-v` prints one line per step, `--repl` adds
+  `<< NOTE` before the sentinel. Attribution is to the drain window,
+  not the cause — stated in the note.
+- Docs/stamps: README, man, Step-vocabulary, `--help` updated; the
+  `docs/` "checked against 0.6.0" stamps are left alone (only the new
+  claims were verified).
+
+---
+
 ## 2026-10-26 — 0.6.0: the output cap, `--show`, live-screen `--repl`
 
 The transcript-volume problem, designed after the 0.5.1 audit showed

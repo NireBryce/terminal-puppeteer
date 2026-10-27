@@ -84,7 +84,7 @@ whatever volume the target produced.
 
 One stderr note may join any run: the count of BEL (`\x07`) bytes the
 target sent — invisible in every view, but the standard unbound-key /
-alert signal.
+alert signal (with `-v`, per step).
 
 **A byte that renders invisible is still there.** A control byte with
 no glyph (an SOH inside a variable, say) reads as nothing in the

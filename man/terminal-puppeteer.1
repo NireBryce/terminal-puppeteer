@@ -1,4 +1,4 @@
-.TH TERMINAL-PUPPETEER 1 "2026-09-08" "terminal-puppeteer 0.5.0" "User Commands"
+.TH TERMINAL-PUPPETEER 1 "2026-10-27" "terminal-puppeteer 0.7.0" "User Commands"
 .SH NAME
 terminal-puppeteer \- drive a real interactive program through a pty, keystroke by keystroke
 .SH SYNOPSIS
@@ -221,6 +221,19 @@ waits for the target to say it. Honest boundary caveat: "after" is a
 length measured on the stripped stream, and one escape sequence can
 straddle it, so it is exact to within about one escape sequence at the
 boundary.
+.TP
+.BI WAIT-FOR-SCREEN: pattern
+The same pattern forms and timeout, matched against the rendered screen
+(the \fB\-\-screen\fR grid) as it is now, not against everything ever
+drawn. \fB^\fR and \fB$\fR anchor per screen row. A leading \fB!\fR
+waits until the pattern is not on the screen. Inherits the renderer's
+limits (layout subset, no alternate screen).
+.TP
+.B SCREEN
+Send nothing; print the rendered grid of the capture so far. Each
+one\-shot snapshot is written as \fB\-\- SCREEN \fIn\fB \-\-\fR plus the grid,
+ahead of the final view; under \fB\-\-repl\fR it is the step's response.
+Uppercase only.
 .PP
 .B No step ever gets an implicit trailing newline.
 That is what lets a step be a bare \fBTAB\fR or a partial line someone's
@@ -491,7 +504,10 @@ One advisory note may join it on standard error: if any BEL (\ex07)
 bytes came back from the target \-\- invisible in both stripped and raw
 output, but the standard unbound-key/alert signal \-\- the count is
 printed after the run, so a bell-heavy capture doesn't look identical
-to a bell-free one.
+to a bell-free one. With \fB\-v\fR the note names the step each bell
+arrived under instead (attributed to the step whose output window
+delivered it); under \fB\-\-repl\fR the response carries a
+\fB<< NOTE\fR line before its sentinel.
 .SH "EXIT BEHAVIOR"
 On its way out this
 .B only ever terminates the target process
