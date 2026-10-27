@@ -18,8 +18,8 @@ jobs:
         # build run; 3.9 is the supported floor.
         python-version: ["3.9", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
       # The two fish integration tests skip where fish is absent; the
@@ -54,8 +54,8 @@ jobs:
     # broke from an installed run.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
       - run: python3 -m pip install build
@@ -76,3 +76,7 @@ jobs:
           /tmp/scratch-venv/bin/terminal-puppeteer --version
           /tmp/scratch-venv/bin/terminal-puppeteer --list-keys
           printf "hi\nENTER\n" | /tmp/scratch-venv/bin/terminal-puppeteer --cmd cat --steps-file - --connect-wait 0.2 --step-delay 0.3 --settle 0.3 | grep -q hi
+          # 0.6.0's cap/readback pair, end to end on the installed wheel:
+          # the complete artifact goes to the file, --show pages it back.
+          /tmp/scratch-venv/bin/terminal-puppeteer --cmd cat --capture-out /tmp/tp-cap.bin --connect-wait 0.2 --step-delay 0.3 --settle 0.3 hi
+          /tmp/scratch-venv/bin/terminal-puppeteer --show /tmp/tp-cap.bin --tail 1 | grep -q hi

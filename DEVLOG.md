@@ -13,6 +13,129 @@ or a commit message instead.
 
 ---
 
+## 2026-10-26 — 0.6.0: the output cap, `--show`, live-screen `--repl`
+
+The transcript-volume problem, designed after the 0.5.1 audit showed
+stdout was the one unbounded leak surface left: a capture poured into
+an agent's context is unfilterable after the fact and buries signal
+and secrets alike. One rule drives all of it — **complete artifact,
+bounded presentation, loud pointer between them** — now written up as
+a repo convention in CLAUDE.md.
+
+- **stdout is capped by default** (`--max-output`, 30000): a run's
+  view, each `--repl` response, `--show`, the dying-target partial —
+  past the cap one loud marker names the cut size and the ways out.
+  `--capture-out` is never capped (the "capture doesn't lie" contract
+  lives there), and `--full-output` is the deliberate
+  everything-in-context opt-out. Sentinel protocol untouched: the
+  marker is part of the response, before `<< DONE`.
+- **`--show FILE`** reads a capture back instead of driving a target —
+  same views as a run, plus `--offset`/`--limit`/`--tail` line
+  selection counted on the viewed bytes (stripped unless `--raw`), so
+  the numbers match a grep over the same view. The loop for a big
+  capture: capture to disk, grep/od the file, `--show` the ranges.
+- **`--repl` + `--screen` is now the live grid** (was a usage error):
+  one persistent rows-x-cols screen fed the whole session, emitted
+  after every step — the bounded view for full-screen targets, the
+  same shape byte deltas have for line-oriented ones. Escape
+  sequences straddling feed boundaries are held back from the last
+  ESC, the screen-parser twin of `ansi.Stripper`'s boundary rule.
+- Docs carried along everywhere (README cap/show sections, man
+  OPTIONS, NOTES fetch gotcha, Recipes big-capture loop, Gotchas
+  bullet, Home quick-shape); stamps re-checked at 0.6.0.
+- **A second adversarial pass over the new surface found four more,
+  all fixed:** run-only flags (`--verbose`, timing flags, `--ssh-arg`)
+  were silently ignored under `--show`, and `--offset/--limit/--tail`
+  were silently ignored without it — every one is now the usual
+  usage error (a flag left at its default stays accepted, since it's
+  indistinguishable from unset); `\C-<non-ASCII letter>` passed
+  `str.isalpha()` and `ord()&0x1f`'d into unrelated control bytes
+  (`\C-é` sent TAB) — now ASCII-only, unknown keys stay literal;
+  `--screen` at a legal winsize (60000x60000) was a 3.6-billion-cell
+  renderer grind past any timeout — now bounded at 4M renderer cells
+  (the pty itself is unaffected); and `--steps-file` decoded in the
+  machine's locale — now always UTF-8, matching what an agent wrote.
+- **The two fixable items from the known-limits list got fixed:**
+  `ansi.Stripper`'s one unbounded tail (a stray ESC followed by bytes
+  that can never start a sequence pinned the boundary, quadratic for
+  exactly the bad-paste captures) now advances past it — the byte
+  after ESC proves which introducers can start a match, and anything
+  else is literal; and the live `--repl --screen` grid holds back an
+  incomplete multi-byte character the same way it holds a truncated
+  escape (`screen.utf8_safe_len`), so a character split across feeds
+  no longer renders as replacement glyphs. `\E` also joins `\e` as an
+  escape spelling (`echo -e` parity), README grew a Known limits
+  section (the one item left is the stdlib-`re`-has-no-watchdog
+  WAIT-FOR caveat, plus the capture memory ceiling), and the CI
+  packaging smoke now round-trips `--capture-out` → `--show`.
+- **SIGTERM/SIGHUP to the tool itself now run the cleanup** instead of
+  bypassing every try/finally: a harness killing a timed-out tool used
+  to orphan the target AND skip the `--capture-out` write (Ctrl-C
+  already worked — KeyboardInterrupt unwinds). The handlers convert
+  the signal to SystemExit down the same unwind; exit status is the
+  died-by-signal convention 128+N. Regression test mirrors the #8
+  Ctrl-C test (pgrep marker) plus the capture-file assertion.
+  `.github/dependabot.yml` keeps the 0.5.1 SHA-pinned Actions fresh.
+  Also: `--cmd '   '` was a bare IndexError traceback (shlex returns
+  no argv) — now a usage error.
+
+---
+
+## 2026-10-26 — 0.5.1: security/robustness audit fixes (agent audit session)
+
+A pass over the whole repo for security and memory-safety issues, plus
+the secrets/transcript question. Two real bugs found and fixed, four
+hardening changes, docs brought along:
+
+- **`--answer-queries` missed repeat queries across drain windows** —
+  reply bookkeeping persisted across `drain()` calls while indexing
+  each call's local output, so a query arriving in a later window (a
+  line editor re-querying on a prompt redraw after the startup window
+  answered the first batch) sliced against a stale count and went
+  unanswered — exactly the #37 fallback the flag exists to prevent.
+  Timing-dependent (a query-free echo read reset the count and masked
+  it), which made it flaky-repro material. Now counted per window.
+  Regression test drives the deterministic shape: SLEEP step between
+  two queries (writes no bytes, so no echo read can mask it).
+- **`--screen` renderer: unbounded IL/DL loops** — the CSI parameter
+  has no length cap, and `for range(p(0,1))` took it literally:
+  `ESC[999999999999L` in a capture (the capture is the target's input)
+  was ~50 hours of list del/insert. Now clamped to the lines actually
+  available at/below the cursor, the real-terminal semantic and the
+  same shape scroll_up already had.
+- **`--capture-out` is created 0600** (and a pre-existing wider-mode
+  file is tightened on rewrite) — a capture is transcript content, the
+  NOTES.md gotcha's own logic applied to the file mode.
+- **Incremental ANSI stripping for `expect()`** — WAIT-FOR re-stripped
+  the whole accumulator every poll, quadratic in capture size.
+  `ansi.Stripper` maintains an exact `ANSI.sub`-equivalent view behind
+  a nothing-spans-it boundary; `session.stripped()` is pinned to
+  one-shot `sub` by tests over a chunking matrix (the first cut of the
+  boundary rule was wrong — an OSC terminator's ESC arriving in its
+  own feed stranded the sequence header in the cache — which is why
+  the tests feed byte-by-byte).
+- **`--ssh` rejects a leading-dash HOST** — one argv element starting
+  with `-` lands in ssh's option parser (`-oProxyCommand=...`);
+  `--ssh-arg` is the documented way to pass options.
+- **fd leak on preexec failure** — `start()` now also catches
+  `subprocess.SubprocessError` (what a `_claim_target_tty` failure
+  surfaces as) and closes both pty fds, same as the OSError path.
+- **Secrets docs completed**: the transcript-content gotcha (NOTES,
+  README, man, docs wiki) now names the stderr paths that carry step
+  content *without* `-v` — failure messages naming un-sent steps
+  (verified live), WAIT-FOR timeouts naming pattern+tail, the
+  near-miss/sleep advisories. Also new NOTES sections: a WAIT-FOR
+  regex is your own CPU budget (no re timeouts; the budget is checked
+  between drains), and the capture-accumulates-in-memory ceiling in
+  the fetch-out-of-band gotcha. The tool never copies env vars
+  anywhere — verified by reading; the man CAVEATS now says so.
+- **CI: third-party actions SHA-pinned** (checkout/setup-python/
+  install-nix-action were tag-pinned).
+- Docs stamps bumped to 0.5.1 (re-verified the pages' claims against
+  this pass; the answer-queries claims read truer now than at 0.5.0).
+
+---
+
 ## 2026-09-09 — #64: docs fact-check pass (two stale examples fixed); the wiki lands in docs/
 
 - Asked for a docs pass "verifying old facts now that so much has

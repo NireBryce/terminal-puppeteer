@@ -215,14 +215,23 @@ it live.
 
 Everything a step contains ends up in the record: `-v` echoes every
 step to stderr as it is sent, the capture (stdout, and any
-`--capture-out` file) contains the pty's echo of it, positional steps
-sit in your own shell history as argv, and `--steps-file` paths land
-in whatever is versioned. A credential pasted as a step — `export
-API_TOKEN=…` ENTER — is now in scrollback, history, and any capture
-file, forever, in plaintext. `--screen` doesn't help (it renders the
-same session), and a future redaction flag (backlog) wouldn't help
-either: the secret already crossed the pty to the target — that's
-what typing it there *means*.
+`--capture-out` file, which is created 0600 because of exactly this)
+contains the pty's echo of it, positional steps sit in your own shell
+history as argv, and `--steps-file` paths land in whatever is
+versioned. A credential pasted as a step — `export API_TOKEN=…` ENTER —
+is now in scrollback, history, and any capture file, forever, in
+plaintext. `--screen` doesn't help (it renders the same session), and a
+future redaction flag (backlog) wouldn't help either: the secret
+already crossed the pty to the target — that's what typing it there
+*means*.
+
+Stderr carries more step content than the `-v` echo, and without any
+flag: a target dying with steps un-sent names the next step verbatim, a
+WAIT-FOR timeout names its pattern plus the last output seen, and the
+near-miss/`sleep` advisories echo the step they're advising about. An
+agent driving this tool keeps a transcript of stderr too, so none of
+these channels is a secret-free place and there's no point ranking them
+— the fix stays "no step ever contains the secret".
 
 The better shape is for no step to ever contain the secret: hand the
 *target* what it needs out-of-band, so the tool only ever drives
@@ -258,7 +267,18 @@ entirely, than to try to parse it back out of a `terminal-puppeteer.py`
 capture. The capture is a terminal transcript — prompts, echoed input,
 ANSI noise even after stripping, wrapped/redrawn lines from ble.sh-style
 line editors — mixed in with the actual content you want. A plain file
-fetch has none of that.
+fetch has none of that. It's also the practical ceiling for session
+size: the capture accumulates in memory for the session's whole life
+(the capture must be complete, so there is no cap), which is fine at
+repro scale and worth avoiding for a long `--repl` session against a
+chatty target.
+
+Stdout won't dump an unbounded capture at an agent anymore, either:
+it's capped at `--max-output` bytes (30000) with one loud marker naming
+the cut, `--capture-out` is the complete artifact, and `--show FILE`
+pages a capture file back in views and line ranges — the loop is
+capture to disk, grep/od the file, `--show` the interesting ranges.
+`--full-output` is the deliberate everything-in-context opt-out.
 
 ## Tune the delays before assuming a negative result
 
@@ -325,4 +345,15 @@ and the run succeeds before the command has run. Pick markers that
 exist only in output: either a string the input can't contain
 (`WAIT-FOR` on `/done-1[0-9][0-9]/` when the input says `done-$?`), or
 assert on the final capture instead of pacing on it.
+
+## A WAIT-FOR regex is your own CPU budget
+
+`/.../` patterns run under Python's `re` against the whole stripped
+capture, and `--wait-for-timeout` is checked between drain ticks, not
+during a search — a pattern that backtracks catastrophically (nested
+quantifiers over a long line, the classic `/(a+)+b/` shape) can
+out-wait its own budget inside one `search()` call. Same trust model
+as the steps themselves: the pattern is yours, and the tool doesn't
+second-guess it. Prefer the literal form (escaped automatically) when
+a regex isn't actually needed.
 

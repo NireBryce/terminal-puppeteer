@@ -49,6 +49,21 @@ ported here 2026-08-24 specifically because it had already drifted once,
 independently, in this much smaller repo too — see that repo's `CLAUDE.md`
 for the fuller account of why it keeps happening.)
 
+**Agent-facing output follows one rule: complete artifact, bounded
+presentation, loud pointer between them.** stdout is capped
+(`--max-output`, one loud marker naming the cut and the ways out;
+`--full-output` is the deliberate opt-out) because an agent's
+transcript should hold what it *chose* to look at, not whatever volume
+a target produced — megabytes of capture in context is unfilterable
+after the fact and buries signal and secrets alike. `--capture-out` is
+the complete record (never capped — the "capture doesn't lie" contract
+lives there), `--show` reads it back in views and line ranges. Apply
+the same shape to any new output surface in this repo, and don't
+weaken the three parts: never silent truncation, never an unbounded
+dump into context, never a cut without a pointer to the rest. It's a
+decent default for agent-facing tools generally, which is why it's
+written down as a rule here and not just a flag.
+
 **Tests are stdlib `unittest`, no pytest, no other test dependency.**
 Matches the tool's own "no dependencies" stance in `README.md` — a test
 suite that needs `pip install` to run would quietly contradict the thing

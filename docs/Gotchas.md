@@ -47,11 +47,20 @@ time once.
   test. Prefer plain commands, or source a file. *NOTES: "the bug
   you're chasing can catch your own diagnostic commands"*
 - **Secrets in steps are transcript content** — `-v`, the capture, and
-  shell history all keep them, in plaintext, forever. Hand them to the
-  target out-of-band. *NOTES: "a credential typed as a step"*
+  shell history all keep them, in plaintext, forever — and so do stderr
+  failure messages, which name un-sent steps without any flag. Hand
+  them to the target out-of-band. *NOTES: "a credential typed as a
+  step"*
+- **A WAIT-FOR regex is your own CPU budget** — the timeout is checked
+  between drains, not during a search, so a catastrophically
+  backtracking pattern can out-wait it. Prefer the literal form.
+  *NOTES: "a WAIT-FOR regex is your own CPU budget"*
 - **Fetch large or exact captures out-of-band** — a steps-side
   redirect + plain `ssh host cat /tmp/out.txt` beats parsing a
-  transcript. *NOTES: "fetch large or exact captures out-of-band"*
+  transcript. stdout is capped by default anyway (`--max-output`,
+  loud marker): `--capture-out` is the complete artifact, `--show`
+  pages it back in ranges. *NOTES: "fetch large or exact captures
+  out-of-band"*
 - **Tune the delays before trusting a negative result** — a clean
   capture with no error might just mean the window closed before the
   bug could fire. *NOTES: "tune the delays"*
@@ -63,5 +72,6 @@ time once.
 
 ---
 
-*Index checked against NOTES.md and terminal-puppeteer 0.5.0
-(2026-09-09) — see issue #64.*
+*Index checked against NOTES.md and terminal-puppeteer 0.6.0
+(2026-10-26) — originally under issue #64; re-verified through 0.5.1's
+security pass and 0.6.0's output-cap changes.*

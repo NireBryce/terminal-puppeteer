@@ -109,7 +109,11 @@ the output. Either wait for a marker your input can't contain, or use
 `WAIT-FOR-NEXT:`. A pattern that never arrives fails the run (exit 1,
 one stderr line naming the step and the last output seen); the budget
 is `--wait-for-timeout` (default 10s), and a target that dies
-mid-wait fails immediately instead of burning the budget.
+mid-wait fails immediately instead of burning the budget. The budget
+is checked between drains, not during a search — a catastrophically
+backtracking regex can out-wait it inside one `search()` (see NOTES's
+"your own CPU budget"); prefer the literal form when a regex isn't
+needed.
 
 ### `WAIT-FOR-NEXT:<pattern>` — same, minus your own echo
 
@@ -121,6 +125,7 @@ straddle it, so it's exact to within about one escape sequence.
 
 ---
 
-*Facts checked against terminal-puppeteer 0.5.0, empirically
-(2026-09-09) — key bytes via `--list-keys`, every example above run
-against a real `bash -i`; see issue #64.*
+*Facts checked against terminal-puppeteer 0.6.0, empirically
+(2026-10-26) — key bytes via `--list-keys`, every example above run
+against a real `bash -i`; originally under issue #64, re-verified
+through 0.5.1's security pass and 0.6.0's output-cap changes.*

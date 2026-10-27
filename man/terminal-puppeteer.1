@@ -202,7 +202,10 @@ being waited for). A pattern that never arrives fails the run \-\- exit
 1, one stderr line naming the step and the last output seen \-\- not a
 slow no-op; the budget is
 .B \-\-wait\-for\-timeout
-(default 10s). Matching is against the transcript, which includes the
+(default 10s). The budget is checked between drain ticks, not during a
+search, so a catastrophically backtracking /regex/ can out-wait it
+inside one search \-\- the pattern is yours, and prefer the literal
+form when a regex isn't needed. Matching is against the transcript, which includes the
 echo of your own typing \-\- wait for a marker that only exists in the
 target's output, not one you also typed.
 .TP
@@ -288,11 +291,17 @@ Print output with ANSI escape sequences intact, instead of the default
 of stripping them.
 .TP
 .B \-\-screen
-Render the final capture as a terminal grid, sized by
+Render the capture as a terminal grid, sized by
 .B \-\-rows
 and
 .B \-\-cols,
-instead of a byte stream. The renderer is a layout-only ANSI
+instead of a byte stream \-\- a run's final capture, or with
+.B \-\-repl
+the live grid (one persistent screen fed the whole session, emitted
+after every step, bounded rows x cols however much the target spews),
+or with
+.B \-\-show
+the whole capture file. The renderer is a layout-only ANSI
 interpreter \-\- cursor positioning, erase, character and line
 insert/delete, scrolling, and scroll regions \-\- the subset that
 determines WHERE characters sit. It is
@@ -316,16 +325,78 @@ and
 replaces the byte stream on standard output (one line per screen row,
 trailing whitespace and empty bottom rows trimmed);
 .B \-\-capture-out
-still carries the raw capture. Does not combine with
-.BR \-\-repl .
+still carries the raw capture.
 .TP
 .BI \-\-capture\-out " FILE"
 Also write the raw, unstripped pty capture to this file \-\- the
 .B \-\-raw
 flag changes standard output's rendering only, and the file always gets
-the bytes exactly as they came off the pty. Written on every exit path:
+the bytes exactly as they came off the pty. Created with mode 0600 (a
+capture is transcript content \-\- the pty's echo of typed steps
+included \-\- so the file does not get the umask's world-readable
+default, and a rerun over an existing wider-mode file tightens it).
+Written on every exit path:
 a run that fails mid-way (target death, WAIT-FOR timeout) still leaves
-the partial capture in the file, which is the diagnostic.
+the partial capture in the file, which is the diagnostic. This is the
+complete artifact the output cap points at; read it back with
+.B \-\-show.
+.TP
+.BI \-\-max\-output " BYTES"
+Cap on standard output \-\- a run's rendered view, each
+.B \-\-repl
+response, and
+.BR \-\-show .
+Past the cap one loud marker line names the cut size and the ways out;
+an agent's transcript should hold what it chose to look at, not
+whatever volume the target produced. The capture file is never capped.
+(default: 30000)
+.TP
+.B \-\-full\-output
+Lift the output cap: everything in context, uncapped \-\- one-shot
+standard output and every
+.B \-\-repl
+response. The deliberate opt-out; the complete-on-disk alternative is
+.BR \-\-capture\-out .
+.TP
+.BI \-\-show " FILE"
+Read a capture file back instead of driving a target: the same views
+as a run (ANSI-stripped by default,
+.BR \-\-raw ,
+.B \-\-screen
+of the whole capture), plus line selection over the viewed bytes with
+.B \-\-offset
+/
+.B \-\-limit
+/
+.BR \-\-tail .
+Line numbers are counted on what
+.B \-\-show
+emits \-\- the stripped view unless
+.BR \-\-raw \-\- so they match a grep over the same view. The intended
+loop for a big capture: keep it with
+.BR \-\-capture\-out ,
+grep/od the file, then page just the interesting ranges through
+.B \-\-show
+into context.
+.TP
+.BI \-\-offset " N"
+With
+.BR \-\-show :
+emit from 1-based line N.
+.TP
+.BI \-\-limit " N"
+With
+.BR \-\-show :
+emit at most N lines from
+.BR \-\-offset .
+.TP
+.BI \-\-tail " N"
+With
+.BR \-\-show :
+emit only the last N lines. Stands alone \-\- not combinable with
+.B \-\-offset
+or
+.BR \-\-limit .
 .TP
 .B \-\-repl
 Interactive mode: instead of taking the whole step list up front, start
@@ -339,9 +410,15 @@ or end of input ends the session (a final
 .B \-\-settle
 drain, then the target is terminated). After each step it prints just
 the NEW output since the last one \-\- stripped unless
-.BR \-\-raw \-\- followed by a
+.B \-\-raw,
+capped like any standard output
+(.BR \-\-max-output ;
+the marker is part of the response, before the sentinel) \-\- followed by a
 .B << DONE
-sentinel line; a failed step (target death, WAIT-FOR timeout) prints
+sentinel line; with
+.B \-\-screen
+the response is the live grid instead of the byte delta; a failed step
+(target death, WAIT-FOR timeout) prints
 its fresh output and
 .B "<< DEAD <why>"
 instead. Exactly one response per step line, always, and the exit
@@ -426,6 +503,14 @@ this does not guess. Include whatever quit step actually applies to your
 target as the last entry in your own step list if a clean logout matters
 for what you're checking.
 .SH "EXIT STATUS"
+.TP
+.B 128+N
+The tool itself was killed by signal N (SIGTERM from an agent-harness
+timeout, SIGHUP from a closing terminal \-\- 143 and 129
+respectively). The same cleanup a Ctrl\-C gets runs on the way out:
+the target is reaped and any
+.B \-\-capture\-out
+file is written with the capture so far.
 .TP
 .B 0
 The target ran to completion (or was terminated on schedule) and output
@@ -561,7 +646,11 @@ lands.
 A credential typed as a step is transcript content: \fB\-v\fR echoes
 steps to standard error, the capture (standard output and any
 \fB\-\-capture\-out\fR file) contains the pty's echo, and positional
-steps sit in shell history as argv. Hand secrets to the target
+steps sit in shell history as argv \-\- and failure and validation
+messages name un-sent steps and WAIT-FOR patterns on standard error
+even without \fB\-v\fR. The tool never copies environment variables
+into any of these; a secret reaches the transcript only by being typed
+as a step (echo on) or printed by the target. Hand secrets to the target
 out\-of\-band instead \-\- the launcher's environment is inherited
 whole (\fB\-\-env\fR values, by contrast, sit in this tool's own argv,
 visible in \fBps\fR), or use target-side config \-\- and keep them

@@ -155,6 +155,7 @@ class RawStepTests(unittest.TestCase):
         self.assertEqual(keys.decode_raw(r"\a\b\t\n\v\f\r"),
                          b"\a\b\t\n\v\f\r")
         self.assertEqual(keys.decode_raw(r"\e"), b"\x1b")
+        self.assertEqual(keys.decode_raw(r"\E"), b"\x1b")  # echo -e's other spelling
         self.assertEqual(keys.decode_raw(r"\\"), b"\\")
 
     def test_control_key_escapes(self):
@@ -165,6 +166,16 @@ class RawStepTests(unittest.TestCase):
         self.assertEqual(keys.decode_raw(r"\c-z"), b"\x1a")
         self.assertEqual(keys.decode_raw(r"\C-["), b"\x1b")
         self.assertEqual(keys.decode_raw(r"\C-@"), b"\x00")
+
+    def test_control_key_escapes_are_ascii_only(self):
+        # str.isalpha() let non-ASCII letters through and ord()&0x1f'd
+        # them into unrelated control bytes: \C-é sent TAB (É is 0xC9,
+        # &0x1f = 0x09). bind would never; the key stays literal text
+        # instead, same rule as every other unknown escape.
+        self.assertEqual(keys.decode_raw(r"\C-é"),
+                         b"\\C-" + "é".encode())
+        self.assertEqual(keys.decode_raw(r"\c-ß"),
+                         b"\\c-" + "ß".encode())
 
     def test_hex_escapes(self):
         self.assertEqual(keys.decode_raw(r"\x1b"), b"\x1b")
@@ -511,6 +522,27 @@ class ScreenRenderTests(unittest.TestCase):
         out = self._render(b'a\r\nb\r\nc\x1b[2;1H\x1b[1M', rows=4, cols=5)
         self.assertEqual(out.split('\n'), ['a', 'c'])
 
+    def test_il_count_clamps_to_the_region(self):
+        # The CSI parameter has no length cap and the capture is the
+        # target's input: an absurd count must clamp to the lines
+        # actually available at/below the cursor (the real-terminal
+        # semantic) rather than spin the insert loop once per line
+        # requested -- ESC[999999999999L used to be ~50 hours of
+        # list del/insert behind --screen.
+        huge = self._render(b'a\r\nb\r\nc\x1b[1;1H\x1b[999999999999L',
+                            rows=4, cols=5)
+        clamped = self._render(b'a\r\nb\r\nc\x1b[1;1H\x1b[4L', rows=4, cols=5)
+        self.assertEqual(huge, clamped)
+
+    def test_dl_count_clamps_to_the_region(self):
+        # Same clamp for DL, with the cursor below the first line so
+        # the region-from-cursor shape is what's pinned (3 lines
+        # at/below row 1 on a 4-row screen).
+        huge = self._render(b'a\r\nb\r\nc\x1b[2;1H\x1b[999999999999M',
+                            rows=4, cols=5)
+        clamped = self._render(b'a\r\nb\r\nc\x1b[2;1H\x1b[3M', rows=4, cols=5)
+        self.assertEqual(huge, clamped)
+
     def test_scrolls_at_the_bottom(self):
         # 24 A-lines on a 24-row screen: the first scrolls off, so 23
         # lines of A remain before the final B.
@@ -693,6 +725,22 @@ class LoadStepsTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_steps_file_is_decoded_as_utf8_regardless_of_locale(self):
+        # Steps are keystrokes an agent wrote in UTF-8; load_steps used
+        # open() in the machine's locale, so a non-UTF-8 locale would
+        # silently send mojibake keystrokes to the target. (This test
+        # passes under a UTF-8 locale either way -- it pins the
+        # contract; the fix is what makes a latin-1 machine safe.)
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as f:
+            f.write("café\nENTER\n")
+            path = f.name
+        try:
+            args = self._args(steps_file=path)
+            self.assertEqual(cli.load_steps(args), ["café", "ENTER"])
+        finally:
+            os.unlink(path)
+
     def test_steps_file_appended_after_positional(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write("from-file\n")
@@ -822,6 +870,79 @@ class AnsiRegexTests(unittest.TestCase):
         self.assertEqual(ansi.ANSI.sub(b"", b"IFS='\x01'"), b"IFS='\x01'")
 
 
+class StripperTests(unittest.TestCase):
+    """Stripper.result() must be byte-identical to a one-shot ANSI.sub
+    over the same raw bytes, no matter how the stream was chunked --
+    expect()'s WAIT-FOR semantics are defined by ANSI.sub, so the
+    incremental version is only correct if it is exact. The chunk
+    matrix matters because every boundary hazard (a sequence straddling
+    two reads, a truncated sequence at end-of-capture, a terminator's
+    ESC landing in its own feed) is a different chunking of the same
+    bytes."""
+
+    ZOO = [
+        # Each entry a different sequence family, per AnsiRegexTests.
+        b"\x1b[31mred\x1b[0mplain \x1b]0;title\x07more",
+        b"\x1b]0;window\x1b\\tail \x1bP+q541b\x1b\\ end",
+        b"pre \x1b[38:2::255:0:0mcolon\x1b[0m \x1b(Bchar\x1b)0",
+        b"\x1b[>4;1m\x1b[=c\x1b[ qmid\x1b",
+        b"\xd3\x9butf8 IFS='\x01'",
+        b"\x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\end",
+        b"bare \x1b ESC followed by text that never forms a sequence",
+        b"\x1b[m" + b"A" * 4096,  # big plain run after a sequence
+    ]
+
+    def test_matches_one_shot_sub_whatever_the_chunking(self):
+        for raw in self.ZOO:
+            for step in (1, 2, 3, 7, 64, len(raw)):
+                with self.subTest(raw=raw[:24], step=step):
+                    s = ansi.Stripper()
+                    for i in range(0, len(raw), step):
+                        s.feed(raw[i:i + step])
+                        s.advance()
+                    self.assertEqual(s.result(), ansi.ANSI.sub(b"", raw))
+
+    def test_truncated_tail_stays_literal_until_it_terminates(self):
+        # The strip-what-is-provable policy across feeds: an OSC with no
+        # terminator yet is literal at every intermediate step, then the
+        # whole thing strips once the BEL lands -- result() after the
+        # final feed equals the one-shot sub of the complete bytes.
+        s = ansi.Stripper()
+        s.feed(b"\x1b]0;part")
+        s.advance()
+        self.assertEqual(s.result(), b"\x1b]0;part")
+        s.feed(b"ial\x07rest")
+        s.advance()
+        self.assertEqual(s.result(), b"rest")
+
+    def test_bare_esc_then_a_large_plain_run_advances_in_bulk(self):
+        # A stray ESC followed by bytes that can never start a sequence
+        # (the follower byte proves it) used to pin the stripped
+        # boundary forever, putting every later byte in the re-scanned
+        # tail -- quadratic for exactly the captures a bad paste
+        # produces. Half a megabyte must not take a quadratic walk.
+        import time
+        raw = b"bare \x1b ESC then " + b"A" * 500_000
+        s = ansi.Stripper()
+        t0 = time.time()
+        for i in range(0, len(raw), 4096):
+            s.feed(raw[i:i + 4096])
+            s.advance()
+        self.assertEqual(s.result(), ansi.ANSI.sub(b"", raw))
+        self.assertLess(time.time() - t0, 10.0)
+
+    def test_osc_st_terminator_arriving_in_its_own_feed(self):
+        # The boundary hazard that killed the first cut of advance():
+        # the terminator's ESC is the last byte of its feed, and moving
+        # the stripped boundary onto it used to strand the OSC's header
+        # bytes in the cache as literals once the backslash arrived.
+        s = ansi.Stripper()
+        for ch in b"\x1b]0;win\x1b\\+tail":
+            s.feed(bytes([ch]))
+            s.advance()
+        self.assertEqual(s.result(), b"+tail")
+
+
 class ArgparseValidationTests(unittest.TestCase):
     def test_target_is_required(self):
         result = run_cli(["literal"])
@@ -842,6 +963,16 @@ class ArgparseValidationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(b"--ssh-arg only applies to --ssh", result.stderr)
 
+    def test_ssh_host_starting_with_dash_is_a_usage_error(self):
+        # The host is one argv element, so this is ssh's option parser
+        # seeing it, not shell injection: '--ssh -oProxyCommand=...'
+        # would otherwise land in ssh as options. No real destination
+        # starts with '-'; option passthrough has --ssh-arg.
+        result = run_cli(["--ssh", "-oProxyCommand=echo pwned", "x"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"starts with '-'", result.stderr)
+        self.assertIn(b"--ssh-arg", result.stderr)
+
     def test_help_does_not_print_the_description_twice(self):
         # The description passed to ArgumentParser and __doc__'s first
         # paragraph used to be the exact same sentence, so --help printed
@@ -859,6 +990,14 @@ class ArgparseValidationTests(unittest.TestCase):
         result = run_cli(["--cmd", "echo 'unterminated", "x", "ENTER"])
         self.assertEqual(result.returncode, 2)
         self.assertIn(b"--cmd:", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_whitespace_cmd_is_a_clean_error_not_a_traceback(self):
+        # shlex.split('   ') hands back no argv at all; Popen's failure
+        # was a bare IndexError traceback instead of a usage error.
+        result = run_cli(["--cmd", "   ", "x"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--cmd: empty command", result.stderr)
         self.assertNotIn(b"Traceback", result.stderr)
 
     def test_missing_steps_file_is_a_clean_error_not_a_traceback(self):
@@ -1138,6 +1277,35 @@ class DriverStepTests(unittest.TestCase):
         argv = ["bash", "-c", "printf '\\033[6n\\033[6n'; cat"]
         out = driver.run(argv, ["x"], 0.4, 0.3, 0.3, answer_queries=True)
         self.assertEqual(out.count(b"^[[1;1R"), 2)
+
+    def test_answer_queries_replies_to_a_query_in_a_later_drain_window(self):
+        # The recurring shape the fixed-window test above can't reach:
+        # query 1 in the connect-wait window, query 2 in a LATER window.
+        # Reply bookkeeping used to persist across drain() calls while
+        # indexing each call's local output, so the second occurrence
+        # sliced against the first window's count and went unanswered --
+        # exactly the #37 fallback (fish flushes its input buffer) the
+        # flag exists to prevent. A SLEEP step is the deterministic
+        # trigger: it writes no bytes, so no query-free echo read lands
+        # between the windows to reset the counter by luck of timing.
+        argv = ["bash", "-c",
+                "printf '\\033[6n'; sleep 0.3; printf '\\033[6n'; exec cat"]
+        out = driver.run(argv, ["SLEEP 0.6"], 0.4, 0.4, 0.2,
+                         answer_queries=True)
+        self.assertEqual(out.count(b"^[[1;1R"), 2)
+
+    def test_expect_timeout_names_its_step_and_last_output(self):
+        # The failure narrative is deliberately diagnostic (pattern plus
+        # the last output seen), which is also why it doubles as one of
+        # the stderr paths a step's content can reach without -v -- see
+        # NOTES.md's transcript-content gotcha. Pinned here so a rework
+        # of the message doesn't silently drop the tail half.
+        argv = ["bash", "-c", "echo LASTSEEN-4-1; cat"]
+        with self.assertRaises(driver.WaitForTimeout) as cm:
+            driver.run(argv, ["WAIT-FOR:tp-never-arrives"], 0.1, 0.1, 0.1,
+                       wait_for_timeout=0.5)
+        self.assertIn("WAIT-FOR:tp-never-arrives", str(cm.exception))
+        self.assertIn("LASTSEEN-4-1", str(cm.exception))
 
     def test_answer_queries_covers_the_query_types_fish_sends(self):
         # fish 4.x probes these on startup and hangs before its first
@@ -1558,6 +1726,48 @@ class SessionTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_capture_path_is_created_0600(self):
+        # A capture is transcript content (NOTES.md's gotcha) -- the pty
+        # echo of typed steps included -- so the file must not inherit
+        # the umask's world-readable default.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'capture.bin')
+            s = session.Session(['cat'], step_delay=0.3, connect_wait=0.2,
+                                capture_path=path).start()
+            s.send_step('x')
+            s.close()
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_capture_path_tightens_a_preexisting_wider_file(self):
+        # O_CREAT's mode only applies to a fresh file; a rerun over an
+        # existing 0644 capture used to keep the wide mode on new,
+        # equally-sensitive content.
+        with tempfile.NamedTemporaryFile(suffix='.cap', delete=False) as f:
+            path = f.name
+        try:
+            os.chmod(path, 0o644)
+            s = session.Session(['cat'], step_delay=0.3, connect_wait=0.2,
+                                capture_path=path).start()
+            s.send_step('x')
+            s.close()
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        finally:
+            os.unlink(path)
+
+    def test_stripped_matches_a_one_shot_sub_of_the_capture(self):
+        # The incremental stripper only helps WAIT-FOR if the session
+        # actually feeds and advances it on every drain; the pure logic
+        # is pinned by StripperTests, this pins the plumbing.
+        argv = ['bash', '-c',
+                "printf '\\033[31mred\\033[0m\\033]0;t\\x07'; cat"]
+        s = session.Session(argv, step_delay=0.3, connect_wait=0.2).start()
+        try:
+            s.send_step('x')
+            self.assertIn(b'red', s.output)
+            self.assertEqual(s.stripped(), ansi.ANSI.sub(b'', s.output))
+        finally:
+            s.close()
+
     @unittest.skipUnless(os.path.isdir('/proc/self/fd'), 'no /proc/self/fd here')
     def test_failed_start_leaks_no_fds(self):
         # The caller-side shape the docstring prescribes: close() in a
@@ -1915,20 +2125,79 @@ class CliIntegrationTests(unittest.TestCase):
                 proc.kill()
                 proc.wait()
 
+    @unittest.skipUnless(shutil.which("pgrep"), "pgrep not available")
+    def test_sigterm_to_the_tool_still_writes_the_capture_and_reaps(self):
+        # The Ctrl-C test above covers SIGINT, which Python turns into
+        # KeyboardInterrupt -- the finally blocks run. A harness killing
+        # a timed-out tool sends SIGTERM, whose default disposition
+        # bypasses every try/finally: target orphaned AND the capture
+        # file never written (the diagnostic is the whole point of
+        # --capture-out). The handler converts the signal to SystemExit
+        # so the same unwind runs; 143 is 128+SIGTERM.
+        marker = f"tp-sigterm-test-{uuid.uuid4().hex}"
+        capture = os.path.join(tempfile.mkdtemp(), "cap.bin")
+        proc = subprocess.Popen(
+            [sys.executable, str(SCRIPT_PATH), "--cmd",
+             f"bash -c 'echo {marker}; while :; do sleep 1; done'",
+             "--connect-wait", "3", "--step-delay", "3", "--settle", "3",
+             "--capture-out", capture, "x"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            # Same spawn-shape as the Ctrl-C test: wait for the target,
+            # land solidly past the early-spawn race window.
+            deadline = time.time() + 5
+            found = b""
+            while time.time() < deadline:
+                found = subprocess.run(
+                    ["pgrep", "-f", marker], stdout=subprocess.PIPE
+                ).stdout
+                if found:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(found, "target process never showed up")
+            time.sleep(0.5)
+
+            proc.send_signal(signal.SIGTERM)
+            self.assertEqual(proc.wait(timeout=10), 143)
+
+            # The cleanup a default-disposition death would have skipped:
+            # the capture file exists and holds what the session saw.
+            with open(capture, "rb") as f:
+                self.assertIn(marker.encode(), f.read())
+            time.sleep(0.5)  # let terminate()/wait() in the finally land
+            still_alive = subprocess.run(
+                ["pgrep", "-f", marker], stdout=subprocess.PIPE
+            ).stdout
+            self.assertFalse(
+                still_alive, "target process survived the tool being SIGTERMed"
+            )
+        finally:
+            subprocess.run(["pkill", "-9", "-f", marker], stderr=subprocess.DEVNULL)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            shutil.rmtree(os.path.dirname(capture), ignore_errors=True)
+
     def test_env_sets_a_variable_in_the_target_process(self):
-        result = run_cli(["--cmd", "env", *FAST, "--env", "TP_TEST_VAR=hello", "x"])
+        result = run_cli(
+            ["--cmd", "env", *FAST, "--full-output",
+             "--env", "TP_TEST_VAR=hello", "x"])
         self.assertIn(b"TP_TEST_VAR=hello", result.stdout)
 
     def test_env_merges_with_inherited_environment_rather_than_replacing_it(self):
         # subprocess.Popen's env= REPLACES the whole environment if given
         # at all -- run() has to merge onto os.environ itself, or the
         # target loses PATH and everything else the moment --env is used.
-        result = run_cli(["--cmd", "env", *FAST, "--env", "TP_TEST_VAR=hello", "x"])
+        result = run_cli(
+            ["--cmd", "env", *FAST, "--full-output",
+             "--env", "TP_TEST_VAR=hello", "x"])
         self.assertIn(b"PATH=", result.stdout)
 
     def test_env_repeatable_for_multiple_variables(self):
         result = run_cli(
-            ["--cmd", "env", *FAST, "--env", "TP_A=1", "--env", "TP_B=2", "x"]
+            ["--cmd", "env", *FAST, "--full-output",
+             "--env", "TP_A=1", "--env", "TP_B=2", "x"]
         )
         self.assertIn(b"TP_A=1", result.stdout)
         self.assertIn(b"TP_B=2", result.stdout)
@@ -1936,7 +2205,7 @@ class CliIntegrationTests(unittest.TestCase):
     def test_no_env_flag_leaves_environment_untouched(self):
         # Default (env=None passed to Popen) must behave exactly like
         # before --env existed -- full, unmodified inherited environment.
-        result = run_cli(["--cmd", "env", *FAST, "x"])
+        result = run_cli(["--cmd", "env", *FAST, "--full-output", "x"])
         self.assertIn(b"PATH=", result.stdout)
 
     def test_verbose_echoes_each_step_to_stderr_in_order(self):
@@ -2289,10 +2558,240 @@ class ReplTests(unittest.TestCase):
             os.unlink(path)
 
 
+class OutputCapTests(unittest.TestCase):
+    """The default stdout cap: a run's rendered view past --max-output
+    bytes is cut with one loud marker naming the size and the ways out;
+    the --capture-out file is never capped; --full-output lifts the cap
+    entirely."""
+
+    BIG = 'bash -c "seq 20000; cat"'  # ~129 KB of output once uncapped
+
+    def test_run_output_is_capped_with_a_loud_marker(self):
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        try:
+            result = run_cli(
+                ["--cmd", self.BIG, "--capture-out", path, *FAST, "x"]
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertLess(len(result.stdout), 40000)
+            self.assertIn(b"truncated at 30000 bytes of ", result.stdout)
+            self.assertIn(b"--capture-out", result.stdout)
+            self.assertIn(b"--full-output", result.stdout)
+            # The complete artifact is the file, not the transcript.
+            with open(path, "rb") as f:
+                raw = f.read()
+            self.assertGreater(len(raw), 100000)
+            self.assertIn(b"19999", raw)
+        finally:
+            os.unlink(path)
+
+    def test_full_output_puts_everything_in_context(self):
+        result = run_cli(["--cmd", self.BIG, *FAST, "--full-output", "x"])
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn(b"truncated", result.stdout)
+        self.assertGreater(len(result.stdout), 100000)
+
+    def test_max_output_override(self):
+        result = run_cli(["--cmd", self.BIG, *FAST, "--max-output", "500", "x"])
+        self.assertEqual(result.returncode, 0)
+        self.assertLess(len(result.stdout), 1000)
+        self.assertIn(b"truncated at 500 bytes of ", result.stdout)
+
+    def test_dead_partial_capture_is_capped_too(self):
+        # The dying target's words are diagnostic, but a 129 KB dying
+        # breath is still transcript spam: same cap, same marker.
+        result = run_cli(
+            ["--cmd", 'bash -c "seq 20000; exit 5"', *FAST, "x"]
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"truncated at 30000 bytes of ", result.stdout)
+        self.assertLess(len(result.stdout), 40000)
+
+
+class ShowCaptureTests(unittest.TestCase):
+    """--show: read a capture file back through the same views a run
+    gets, with Read-tool-style line selection over the viewed bytes.
+    The capture source is a real run's --capture-out file."""
+
+    def _capture(self, cmd='bash -c "seq 100; cat"'):
+        with tempfile.NamedTemporaryFile(suffix=".cap", delete=False) as f:
+            path = f.name
+        result = run_cli(["--cmd", cmd, "--capture-out", path, *FAST, "x"])
+        self.assertEqual(result.returncode, 0)
+        return path
+
+    def test_show_emits_the_view_a_run_would_have(self):
+        path = self._capture()
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            shown = run_cli(["--show", path, "--full-output"])
+            self.assertEqual(shown.returncode, 0)
+            # A seq-100 capture has no ANSI, so stripped view == raw
+            # bytes; --show adds the same trailing newline a run does.
+            self.assertEqual(shown.stdout, raw + b"\n")
+        finally:
+            os.unlink(path)
+
+    def test_offset_and_limit_select_lines(self):
+        path = self._capture()
+        try:
+            shown = run_cli(["--show", path, "--offset", "10", "--limit", "3"])
+            self.assertEqual(shown.returncode, 0)
+            self.assertEqual(shown.stdout, b"10\r\n11\r\n12\r\n")
+        finally:
+            os.unlink(path)
+
+    def test_tail_selects_the_last_lines(self):
+        path = self._capture()
+        try:
+            shown = run_cli(["--show", path, "--tail", "2"])
+            self.assertEqual(shown.returncode, 0)
+            # seq's 100 lines, then the echo of the 'x' step -- which
+            # has no trailing CRLF in the capture (nothing was typed
+            # after it), so write_output's newline is the file's end.
+            self.assertEqual(shown.stdout, b"100\r\nx\n")
+        finally:
+            os.unlink(path)
+
+    def test_line_numbers_count_on_the_stripped_view(self):
+        # The numbers match a grep over the same view: default --show
+        # counts stripped lines; --raw counts raw ones.
+        path = self._capture(cmd="bash -c \"printf '\\033[31mred\\033[0m\\nline2\\n'; cat\"")
+        try:
+            shown = run_cli(["--show", path, "--offset", "1"])
+            self.assertEqual(shown.returncode, 0)
+            self.assertNotIn(b"\x1b[", shown.stdout)
+            self.assertTrue(shown.stdout.startswith(b"red\r\n"))
+            raw_shown = run_cli(["--show", path, "--raw", "--offset", "1"])
+            self.assertIn(b"\x1b[31m", raw_shown.stdout)
+        finally:
+            os.unlink(path)
+
+    def test_show_screen_renders_the_grid(self):
+        path = self._capture(cmd="bash -c \"printf 'a\\033[31mb\\033[0mc'; cat\"")
+        try:
+            shown = run_cli(["--show", path, "--screen"])
+            self.assertEqual(shown.returncode, 0)
+            self.assertIn(b"abc", shown.stdout)
+            self.assertNotIn(b"\x1b[", shown.stdout)
+        finally:
+            os.unlink(path)
+
+    def test_show_cap_points_at_the_file(self):
+        path = self._capture(cmd='bash -c "seq 20000; cat"')
+        try:
+            shown = run_cli(["--show", path, "--max-output", "100"])
+            self.assertEqual(shown.returncode, 0)
+            self.assertIn(b"truncated at 100 bytes of ", shown.stdout)
+            self.assertIn(b"holds all of it", shown.stdout)
+        finally:
+            os.unlink(path)
+
+    def test_show_validation_errors(self):
+        cases = [
+            (["--show", "/nonexistent/x.cap"], 1, b"could not read"),
+            (["--show", "x.cap", "--cmd", "cat"], 2, b"--show"),
+            (["--show", "x.cap", "step"], 2, b"--show reads an existing capture"),
+            (["--show", "x.cap", "--repl"], 2, b"--repl drives a target"),
+            (["--show", "x.cap", "--screen", "--tail", "3"], 2, b"not combinable"),
+            (["--show", "x.cap", "--tail", "2", "--offset", "2"], 2, b"stands alone"),
+            (["--show", "x.cap", "--offset", "0"], 2, b"at least 1"),
+            (["--show", "x.cap", "--capture-out", "y.cap"], 2, b"--capture-out"),
+            (["--show", "x.cap", "--env", "K=V"], 2, b"--env"),
+            (["--show", "x.cap", "--verbose"], 2, b"--verbose"),
+            (["--show", "x.cap", "--step-delay", "9"], 2, b"--step-delay"),
+            (["--show", "x.cap", "--settle", "9"], 2, b"--settle"),
+            (["--show", "x.cap", "--connect-wait", "9"], 2, b"--connect-wait"),
+            (["--show", "x.cap", "--wait-for-timeout", "9"], 2,
+             b"--wait-for-timeout"),
+            # Equals form: '-oFoo' bare looks like an option to argparse
+            # and errors anyway; this is the case that used to slip through.
+            (["--show", "x.cap", "--ssh-arg=-oFoo"], 2, b"--ssh-arg"),
+        ]
+        for args, code, needle in cases:
+            with self.subTest(args=args):
+                result = run_cli(args)
+                self.assertEqual(result.returncode, code)
+                self.assertIn(needle, result.stderr)
+
+    def test_range_flags_without_show_are_a_usage_error(self):
+        # Silent-ignore contradicts every other flag gate here; reached
+        # only on the run/repl paths, where the ranges would do nothing.
+        result = run_cli(["--cmd", "cat", *FAST, "--tail", "5", "x"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"--offset/--limit/--tail only apply to --show",
+                      result.stderr)
+
+    def test_show_at_default_timing_flags_is_accepted(self):
+        # The timing gate only fires on an EXPLICIT value; a flag left
+        # at its default is indistinguishable from unset.
+        path = self._capture()
+        try:
+            shown = run_cli(["--show", path, "--step-delay", "1.5",
+                             "--limit", "1"])
+            self.assertEqual(shown.returncode, 0)
+            self.assertEqual(shown.stdout, b"1\r\n")
+        finally:
+            os.unlink(path)
+
+    def test_screen_bounded_by_renderer_cells_not_the_winsize(self):
+        # rows*cols is renderer memory (rows*cols cells of Python
+        # strings); 60000x60000 -- a legal winsize -- used to be a
+        # 3.6-billion-cell grind past any timeout. 4M cells is the
+        # ceiling, and exactly 4M is accepted (no off-by-one).
+        result = run_cli(
+            ["--cmd", "cat", "--screen", "--rows", "60000",
+             "--cols", "60000", "x"], timeout=30,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"renderer cells", result.stderr)
+        result = run_cli(
+            ["--cmd", "cat", "--screen", "--rows", "2000",
+             "--cols", "2000", *FAST, "x"], timeout=60,
+        )
+        self.assertEqual(result.returncode, 0)
+
+
+class Utf8SafeLenTests(unittest.TestCase):
+    """utf8_safe_len: the length prefix safe to decode when the stream
+    arrives in arbitrary chunks -- the live grid's defense against a
+    multi-byte character split across feeds rendering as replacement
+    glyphs."""
+
+    def test_complete_ascii_passes_whole(self):
+        self.assertEqual(screen.utf8_safe_len(b"plain"), 5)
+        self.assertEqual(screen.utf8_safe_len(b""), 0)
+
+    def test_partial_multibyte_is_held_back(self):
+        # 一 is \xe4\xb8\x80: a 3-byte character missing its tail
+        # holds only from the lead byte.
+        self.assertEqual(screen.utf8_safe_len("一".encode()), 3)
+        self.assertEqual(screen.utf8_safe_len("一".encode()[:1]), 0)
+        self.assertEqual(screen.utf8_safe_len("一".encode()[:2]), 0)
+        self.assertEqual(screen.utf8_safe_len(b"a" + "一".encode()[:2]), 1)
+        # 4-byte emoji (f0 9f ...).
+        self.assertEqual(screen.utf8_safe_len("\U0001f600".encode()[:3]), 0)
+        self.assertEqual(screen.utf8_safe_len("\U0001f600".encode()), 4)
+
+    def test_stray_continuations_are_not_partial(self):
+        # Continuations with no lead before them would freeze a feeder
+        # waiting for a lead that was already consumed; they pass
+        # through for the decoder to replace.
+        self.assertEqual(screen.utf8_safe_len(b"\x80\x80"), 2)
+        self.assertEqual(screen.utf8_safe_len("一".encode() + b"\x80"), 4)
+
+    def test_invalid_leads_pass_through(self):
+        # 0xfe/0xff are never valid UTF-8; holding them would serve no
+        # purpose -- the decoder replaces them.
+        self.assertEqual(screen.utf8_safe_len(b"\xfe\xff"), 2)
+
+
 class ScreenCliTests(unittest.TestCase):
     """--screen through the whole CLI: the grid replaces the byte
-    stream on stdout, --capture-out still gets the raw bytes, and the
-    flag refuses to combine with --repl."""
+    stream on stdout, --capture-out still gets the raw bytes, and with
+    --repl the grid goes live (one persistent screen, per-step)."""
 
     def test_screen_renders_the_final_grid_end_to_end(self):
         # The integration acceptance shape: prompt/echo appears ONCE
@@ -2325,16 +2824,38 @@ class ScreenCliTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_screen_conflicts_with_repl(self):
-        # --screen renders a FINAL capture; a live REPL session has
-        # none, so the combination is a usage error rather than a
-        # silently meaningless grid.
+    def test_screen_repl_is_the_live_grid(self):
+        # --screen used to conflict with --repl (it rendered a FINAL
+        # capture; a live session had none). Now the combination is the
+        # live mode: one persistent grid fed the whole session, emitted
+        # after every step -- bounded rows-x-cols per response, however
+        # much the target spews, each followed by the DONE sentinel.
         result = run_cli_input(
-            ["--cmd", "cat", *FAST, "--repl", "--screen"], b"hi\n"
+            ["--cmd", "bash --norc -i", *FAST, "--repl", "--screen",
+             "--rows", "6", "--cols", "60"],
+            b"echo LIVE-GRID-9\nENTER\n:quit\n",
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn(b"--screen", result.stderr)
-        self.assertIn(b"--repl", result.stderr)
+        self.assertEqual(result.returncode, 0)
+        # One grid per response (startup + 2 steps): the sentinels stay
+        # intact, and the executed command's output made it onto the
+        # screen.
+        self.assertEqual(result.stdout.count(b"<< DONE"), 3)
+        self.assertIn(b"LIVE-GRID-9", result.stdout)
+        self.assertNotIn(b"\x1b[", result.stdout)  # a grid has no ANSI
+
+    def test_screen_repl_stays_bounded_on_a_chatty_target(self):
+        # The point of the live grid: a step whose delta is huge costs
+        # rows-x-cols of transcript, not the delta.
+        result = run_cli_input(
+            ["--cmd", 'bash -c "seq 5000; cat"', *FAST, "--repl",
+             "--screen", "--rows", "5", "--cols", "40"],
+            b"go\n:quit\n",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count(b"<< DONE"), 2)  # startup + go
+        # 5 rows x 40 cols plus newline handling per grid: even with
+        # tens of kilobytes of target output, it never landed.
+        self.assertLess(len(result.stdout), 5000)
 
 
 if __name__ == "__main__":
