@@ -2,7 +2,7 @@
 
 > **Written by Claude Code, for Claude Code.** Working notes, not
 > documentation — `README.md` is the human/agent-usage entry point,
-> `NOTES.md` is what using the tool is actually like, `DEVLOG.md` is what
+> `NOTES.md` is what using the tool is actually like, `agent-devlog.md` is what
 > happened to the project and when. This file is the fourth thing: the
 > rules for working *in* this repo, as opposed to *with* the tool it ships.
 
@@ -28,7 +28,7 @@ verified by actually building and running them, not just written:
 `pyproject.toml` (`pip install .`, `[project.scripts]`), `flake.nix`
 (`nix run`/`nix build`, plus `apps`/`devShells`), and `default.nix` (a
 `flake-compat` shim so `nix-build` works without flakes too). Read
-`DEVLOG.md` before assuming you know the current state; it's short and
+`agent-devlog.md` before assuming you know the current state; it's short and
 it's exactly for this.
 
 ## Conventions
@@ -137,12 +137,14 @@ a repo other than this one — don't assume from how the text reads.
 
 - `README.md` — what the tool does and how to invoke it: targets, the
   step vocabulary, timing, exit behavior. Read this first.
-- `NOTES.md` — gotchas from actually using it against a real bug: terminal
+- `.claude/NOTES.md` — gotchas from actually using it against a real bug: terminal
   query escapes that go unanswered, a control byte that renders invisible,
   the forgotten-`ENTER` and bulk-paste mistakes, the tool's own diagnostic
   commands getting caught by the very bug being chased, tuning delays
   before trusting a negative result.
-- `DEVLOG.md` — terse, reverse-chronological, one entry per logical
+- `.claude/agent-tasks.md` — working list: open items, deferred backlog, and
+  recently done work awaiting its `.claude/agent-devlog.md` entry.
+- `.claude/agent-devlog.md` — terse, reverse-chronological, one entry per logical
   change rather than per commit. Read it before picking work back up here;
   it exists so that isn't a full `git log` read every time.
 - `docs/` — the wiki, in-repo (GitHub's wiki feature is unavailable on
@@ -153,7 +155,7 @@ a repo other than this one — don't assume from how the text reads.
   duplicates wherever drift is likely, and every page is stamped with the
   version its facts were empirically checked against. When behavior
   changes, re-verify the stamped claims or bump the stamps.
-- `CONTRIBUTORS.md` / `STYLEGUIDE.md` — the outside-facing counterpart to
+- `CONTRIBUTORS.md` / `.claude/agent-styleguide.md` — the outside-facing counterpart to
   this file: who can contribute (explicitly including LLM agents) and
   what "well-written" means for a submission from one. This file has the
   mechanics for a session working directly in the repo; those two are for

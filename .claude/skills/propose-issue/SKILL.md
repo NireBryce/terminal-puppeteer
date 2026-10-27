@@ -23,7 +23,7 @@ started using issues at all. This repo doesn't have that history — it's
 been issue-native since `NireBryce/terminal-puppeteer` existed (issue #1,
 filed and fixed the same day the repo was created) — so the two
 `nixos-configs`-specific record-keeping mechanisms below are
-`DEVLOG.md`/`NOTES.md`, not a third markdown queue to check separately.
+`agent-devlog.md`/`NOTES.md`, not a third markdown queue to check separately.
 
 ## This never extends to a third-party repo
 
@@ -34,7 +34,7 @@ OS-level pty quirk), filing there is a different, heavier action with its
 own rule in `CLAUDE.md`: never without Elly saying so explicitly, in those
 words, unprompted — not satisfied by this skill's own step 3
 `AskUserQuestion`. This skill still applies for tracking such a defect
-*here* (`bug` label, a `DEVLOG.md` entry noting the upstream cause); filing
+*here* (`bug` label, a `agent-devlog.md` entry noting the upstream cause); filing
 it at the third-party project is a separate ask made by name.
 
 ## Why propose instead of just filing
@@ -51,7 +51,7 @@ merge does.
    gets filed.
 2. **Check it isn't already tracked.** Run
    `gh issue list --repo NireBryce/terminal-puppeteer --search "<keywords>" --state all`
-   and grep `DEVLOG.md`/`NOTES.md` for the topic. Stop here if it's already
+   and grep `agent-devlog.md`/`NOTES.md` for the topic. Stop here if it's already
    covered.
 3. **Ask, showing the real content.** Use `AskUserQuestion` with the title
    and a short body already drafted — the decision should land on the
@@ -74,7 +74,7 @@ merge does.
    ```
 
    Report the issue URL back in the reply.
-5. **On no:** don't file it, say so, and still leave whatever `DEVLOG.md`
+5. **On no:** don't file it, say so, and still leave whatever `agent-devlog.md`
    note the finding warrants regardless — declining the issue doesn't
    mean the knowledge should evaporate too.
 

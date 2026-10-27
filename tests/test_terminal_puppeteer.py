@@ -631,7 +631,7 @@ class ScreenRenderTests(unittest.TestCase):
         self.assertEqual(out, 'a       b')
 
     def test_the_blesh_probe_capture_renders_legibly(self):
-        # The acceptance case from the retired PLAN.md (TODO.md's
+        # The acceptance case from the retired PLAN.md (agent-tasks.md's
         # --screen Done entry): ble.sh's cursor-glyph probe
         # as it lands in a capture -- an unanswered DA2 request
         # (\e[>c) followed by literal bracketed glyphs -- must render

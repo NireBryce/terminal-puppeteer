@@ -9,7 +9,7 @@ stand-in.
 
 This wiki is task-oriented: how to *do* the things the tool is for. The
 canonical, complete reference is [`README.md`](../README.md); the war
-stories are [`NOTES.md`](../NOTES.md). Pages here link rather than
+stories are [`NOTES.md`](../.claude/NOTES.md). Pages here link rather than
 duplicate wherever drift is likely.
 
 ## Task pages

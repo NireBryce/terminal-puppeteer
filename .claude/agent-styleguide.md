@@ -46,11 +46,11 @@ vibe.
 7. **Match the existing voice.** Terse, concrete, dashes for asides, real
    examples over abstract claims, no marketing language, no filler
    ("Great catch!", "This comprehensive fix..."), no unnecessary hedging
-   or apologizing. Read README.md, NOTES.md, and DEVLOG.md before writing
+   or apologizing. Read README.md, NOTES.md, and agent-devlog.md before writing
    prose for this repo — they're the style reference, not this
    paragraph's description of them.
 
-8. **Read first, then write.** Check `DEVLOG.md` and the issue tracker
+8. **Read first, then write.** Check `agent-devlog.md` and the issue tracker
    (open and closed) before filing or fixing something that might
    already be known, already tracked, or already fixed. `CLAUDE.md`'s
    `investigate-bug` skill exists specifically because skipping this
