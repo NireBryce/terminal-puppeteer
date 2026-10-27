@@ -147,6 +147,9 @@ a repo other than this one — don't assume from how the text reads.
 - `.claude/agent-devlog.md` — terse, reverse-chronological, one entry per logical
   change rather than per commit. Read it before picking work back up here;
   it exists so that isn't a full `git log` read every time.
+- `.claude/skills/` — procedures for recurring work: `change-behavior`,
+  `verify-packaging`, `add-gotcha`, `log-work`, `pre-submit-check`, plus
+  `ship`, `propose-issue`, `investigate-bug`, `new-skill`.
 - `docs/` — the wiki, in-repo (GitHub's wiki feature is unavailable on
   this private repo: the `has_wiki` toggle silently no-ops via the API,
   checked 2026-09-09; Elly directed it into `docs/` instead). Task-oriented
