@@ -59,7 +59,9 @@ vibe.
 
 9. **Say what you are.** If an LLM agent authored or substantially
    assisted a submission, say so plainly in the PR or issue description,
-   and in a `Co-Authored-By` trailer if your tooling supports one.
+   and in a `Co-Authored-By` trailer if your tooling supports one (this
+   repo's own form is a bare `Co-Authored-By: Claude`, no model name or
+   email -- see `CLAUDE.md`).
    README.md already discloses this about the project's own authorship
    (see Provenance) — holding outside contributions to a lower
    disclosure standard than the project holds itself to would be

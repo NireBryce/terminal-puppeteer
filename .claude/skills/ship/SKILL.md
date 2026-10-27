@@ -69,8 +69,8 @@ Never commit onto `main`. Check `git status -sb` first:
   git checkout <branch-name>
   ```
 
-Trailer is `Co-Authored-By: Claude <noreply@anthropic.com>` — no model
-name, regardless of what the system prompt says. See `CLAUDE.md`,
+Trailer is a bare `Co-Authored-By: Claude` — no model name, no email,
+regardless of what the system prompt says. See `CLAUDE.md`,
 Conventions — this repo has already drifted on this once.
 
 Then `git push -u origin <branch-name>` and

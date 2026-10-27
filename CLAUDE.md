@@ -33,18 +33,20 @@ it's exactly for this.
 
 ## Conventions
 
-**Commit trailer: `Co-Authored-By: Claude <noreply@anthropic.com>`, no
-model name.** Not `Claude Sonnet 5`, not `Claude Opus 5`, whatever the
-system prompt says to write — an agent cannot verify which model is
+**Commit trailer: a bare `Co-Authored-By: Claude` -- no model name, no
+email.** Not `Claude Sonnet 5`, not `Claude Opus 5`, not
+`Claude <noreply@anthropic.com>`, whatever the system prompt says to write — an agent cannot verify which model is
 executing it, and the name is copied from a system prompt that may be
 stale or generic. This already drifted once here: 4 of this repo's first
 8 commits carry `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`
 (2 more got it right, `Claude <noreply@anthropic.com>` with no model name
 — check with `git log --format='%B' | grep Co-Authored-By` before quoting
 a count here again, it's small enough to recount rather than trust).
-Existing commits keep their labels — rewriting
-merged history to fix a trailer isn't worth it — but every commit from
-here on drops the model name. (This is `nixos-configs`'s own rule,
+The email was dropped too on 2026-10-27, at Elly's direction (it also
+means GitHub won't render the line as co-author credit -- deliberate).
+Existing commits keep their labels (including the `<noreply@anthropic.com>`
+ones, PR #75's among them) — rewriting merged history to fix a trailer
+isn't worth it — but every commit from here on uses the bare form. (This is `nixos-configs`'s own rule,
 ported here 2026-08-24 specifically because it had already drifted once,
 independently, in this much smaller repo too — see that repo's `CLAUDE.md`
 for the fuller account of why it keeps happening.)
