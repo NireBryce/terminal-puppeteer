@@ -2,9 +2,10 @@
 
 > **Written by Claude Code, for Claude Code.** Working notes, not
 > documentation — `README.md` is the human/agent-usage entry point,
-> `NOTES.md` is what using the tool is actually like, `agent-devlog.md` is what
-> happened to the project and when. This file is the fourth thing: the
-> rules for working *in* this repo, as opposed to *with* the tool it ships.
+> `.claude/NOTES.md` is what using the tool is actually like,
+> `.claude/agent-devlog.md` is what happened to the project and when.
+> This file is the fourth thing: the rules for working *in* this repo,
+> as opposed to *with* the tool it ships.
 
 ## What this is
 
@@ -13,7 +14,11 @@ through a pty. `terminal-puppeteer.py` at the repo root is a thin entry
 point (`from terminal_puppeteer.cli import main`) kept only so
 `./terminal-puppeteer.py ...` keeps working without installing anything;
 the actual implementation is the `terminal_puppeteer/` package next to
-it — `keys.py` (the step vocabulary), `ansi.py` (escape stripping),
+it (underscored because it's the Python import name and a hyphen isn't a
+valid identifier; the hyphenated `terminal-puppeteer` is the project and
+command name, and packaging treats the two spellings as the same
+distribution — not a Nix thing, don't "fix" one to match the other) —
+`keys.py` (the step vocabulary), `ansi.py` (escape stripping),
 `driver.py` (the pty/subprocess mechanics), `cli.py` (argparse + `main`).
 Extracted 2026-08-24 from `NireBryce/nixos-configs`
 (`flake/scripts/ssh-pty-drive.py`, built there to chase a real
@@ -28,8 +33,8 @@ verified by actually building and running them, not just written:
 `pyproject.toml` (`pip install .`, `[project.scripts]`), `flake.nix`
 (`nix run`/`nix build`, plus `apps`/`devShells`), and `default.nix` (a
 `flake-compat` shim so `nix-build` works without flakes too). Read
-`agent-devlog.md` before assuming you know the current state; it's short and
-it's exactly for this.
+`.claude/agent-devlog.md` before assuming you know the current state; it's
+short and it's exactly for this.
 
 ## Conventions
 
