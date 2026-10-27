@@ -30,6 +30,15 @@ concern (`keys.py`, `ansi.py`, `driver.py`, `cli.py`) once it outgrew one
 file. Grab the whole directory, not just the script, if copying this
 elsewhere — the wrapper needs its sibling package to run.
 
+Why `terminal-puppeteer` but `terminal_puppeteer/`: the hyphenated form is
+the project/command name (repo, `pip install`, the installed command, the
+Nix package). The underscored form is the Python import name, and has to
+be: a hyphen isn't valid in a Python identifier, so `import
+terminal-puppeteer` can't exist. Packaging tools treat `-` and `_` as the
+same in a distribution name, so the two spellings are one project, not a
+mismatch (compare `pip install scikit-learn` / `import sklearn`). Nothing
+about this is Nix-specific.
+
 `pip install .` (or from a released version) gives a `terminal-puppeteer`
 command instead — no `.py`, a proper generated entry point rather than a
 copy of the script. Same tool either way; which name applies depends on

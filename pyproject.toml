@@ -26,6 +26,10 @@ build-backend = "setuptools.build_meta"
 # reverted after it broke every installed invocation -- see CLAUDE.md's
 # "terminal-puppeteer.py's hyphenated name is deliberate" entry for the
 # fuller account of why.
+# The underscore in "terminal_puppeteer" is required, not a leftover: it is
+# the importable package name, and a hyphen isn't a valid Python identifier.
+# The hyphenated `name` above is the distribution/command name; packaging
+# tools normalize "-" and "_" as equivalent there, so they're one project.
 [tool.setuptools]
 packages = ["terminal_puppeteer"]
 
