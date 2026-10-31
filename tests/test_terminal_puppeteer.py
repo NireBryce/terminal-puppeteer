@@ -1849,10 +1849,14 @@ def _localhost_ssh():
 _LOCAL_SSH = _localhost_ssh()
 
 
-@unittest.skipUnless(_FISH4, "fish 4 not on PATH")
 class ScreenStepSessionTests(unittest.TestCase):
     """SCREEN / WAIT-FOR-SCREEN (issues #66, #67) and per-step BEL
     attribution (#68), on the Session directly."""
+
+    # `clear` needs $TERM, which CI and the nix build sandbox don't set
+    # ("TERM environment variable not set." leaves the screen as it was);
+    # these escapes are what it sends, without the lookup.
+    CLEAR = r"printf '\033[H\033[2J\033[3J'"
 
     def _bash(self, **kwargs):
         s = session.Session(['bash', '--norc', '-i'], step_delay=0.4,
@@ -1882,7 +1886,7 @@ class ScreenStepSessionTests(unittest.TestCase):
     def test_wait_for_screen_ignores_text_no_longer_displayed(self):
         s = self._bash()
         try:
-            for step in ('echo STALE-MARKER', 'ENTER', 'clear', 'ENTER'):
+            for step in ('echo STALE-MARKER', 'ENTER', self.CLEAR, 'ENTER'):
                 s.send_step(step)
             s.send_step('WAIT-FOR:STALE-MARKER')  # stream still has it
             with self.assertRaises(session.WaitForTimeout) as caught:
@@ -1900,7 +1904,7 @@ class ScreenStepSessionTests(unittest.TestCase):
             with self.assertRaises(session.WaitForTimeout) as caught:
                 s.send_step('WAIT-FOR-SCREEN:!GONE-SOON')
             self.assertIn('still on the screen', str(caught.exception))
-            s.send_step('clear')
+            s.send_step(self.CLEAR)
             s.send_step('ENTER')
             s.send_step('WAIT-FOR-SCREEN:!GONE-SOON')
         finally:
@@ -1930,6 +1934,7 @@ class ScreenStepSessionTests(unittest.TestCase):
         self.assertEqual(s.bel_log, [(2, 'ENTER', 1)])
 
 
+@unittest.skipUnless(_FISH4, "fish 4 not on PATH")
 class FishIntegrationTests(unittest.TestCase):
     """The issue #37 verification, kept as tests: fish works under this
     tool given both fixes its refusal exposed (controlling terminal +
